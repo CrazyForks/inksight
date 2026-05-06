@@ -342,6 +342,7 @@ async def build_image(
     preview_city_override: Optional[str] = None,
     preview_mode_override: Optional[dict] = None,
     preview_memo_text: Optional[str] = None,
+    preview_memo_settings: Optional[dict] = None,
     preview_ui_language: Optional[str] = None,
     current_user_id: Optional[int] = None,
     user_api_key: Optional[str] = None,
@@ -575,7 +576,7 @@ async def build_image(
         quota_user_id = current_user_id
         logger.debug("[QUOTA] Using current_user_id=%s for Web preview", current_user_id)
 
-    if preview_city_override or preview_mode_override or preview_memo_text:
+    if preview_city_override or preview_mode_override or preview_memo_text or preview_memo_settings:
         config = copy.deepcopy(config or {})
         mode_overrides = dict(config.get("mode_overrides") or {})
         current_mode_override = dict(mode_overrides.get(persona) or {})
@@ -600,6 +601,13 @@ async def build_image(
                 config["modeOverrides"] = mode_overrides
                 config["memo_text"] = memo_clean
                 config["memoText"] = memo_clean
+            if isinstance(preview_memo_settings, dict) and preview_memo_settings:
+                ms = dict(current_mode_override.get("mode_settings") or {})
+                ms.update(preview_memo_settings)
+                current_mode_override["mode_settings"] = ms
+                mode_overrides[persona] = current_mode_override
+                config["mode_overrides"] = mode_overrides
+                config["modeOverrides"] = mode_overrides
 
     # 无设备预览（/preview 等）：按页面站点语言（中/英）决定 mode_language。
     # 设备配置页预览（有 mac）：沿用 configs 中保存的 mode_language，不被 ui_language 覆盖。

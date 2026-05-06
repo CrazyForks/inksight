@@ -117,6 +117,7 @@ export default function ExperiencePage() {
 
   const [city] = useState("杭州");
   const [memoText] = useState(t(locale, "preview.memo.default", "写点什么吧…"));
+  const defaultMemoDraft = { title1: "", text1: "", title2: "", text2: "", title3: "", text3: "" };
 
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -134,7 +135,7 @@ export default function ExperiencePage() {
   const [quoteDraft, setQuoteDraft] = useState("");
   const [authorDraft, setAuthorDraft] = useState("");
   const [weatherDraftLocation, setWeatherDraftLocation] = useState<LocationValue>({ city: "杭州" });
-  const [memoDraft, setMemoDraft] = useState("");
+  const [memoDraft, setMemoDraft] = useState<{ title1: string; text1: string; title2: string; text2: string; title3: string; text3: string }>({ title1: "", text1: "", title2: "", text2: "", title3: "" , text3: "" });
   const [calendarReminders, setCalendarReminders] = useState<Record<string, string>>({});
   const [timetableData, setTimetableData] = useState<TimetableData>({
     style: "weekly",
@@ -278,7 +279,7 @@ export default function ExperiencePage() {
       }
       if (targetMode === "MEMO") {
         setModal({ type: "memo", modeId: targetMode });
-        setMemoDraft(memoText);
+        setMemoDraft(defaultMemoDraft);
         return;
       }
       if (targetMode === "MY_QUOTE") {
@@ -324,12 +325,14 @@ export default function ExperiencePage() {
         params.set("city_override", cityOverride);
       }
       
-      // 处理便签文本：优先使用 override 中的 memo_text
-      if (targetMode === "MEMO") {
-        const memoOverrideValue =
-          override && "memo_text" in override ? override.memo_text : undefined;
-        const memoOverride = memoOverrideValue ? String(memoOverrideValue) : memoText;
-        params.set("memo_text", memoOverride);
+      // 处理便签文本：优先使用 override 中的 memo_title/text 字段
+      if (targetMode === "MEMO" && override) {
+        for (const i of [1, 2, 3]) {
+          const tk = `memo_title_${i}`;
+          const ck = `memo_text_${i}`;
+          if (tk in override) params.set(tk, String((override as Record<string, unknown>)[tk]));
+          if (ck in override) params.set(ck, String((override as Record<string, unknown>)[ck]));
+        }
       }
       
       const mergedOverride: Record<string, unknown> = { ...(override || {}) };
@@ -466,7 +469,7 @@ export default function ExperiencePage() {
     }
     if (modeId === "MEMO") {
       setPreviewMode(modeId);
-      setMemoDraft(memoText);
+      setMemoDraft(defaultMemoDraft);
       setModal({ type: "memo", modeId });
       return;
     }
@@ -928,28 +931,51 @@ export default function ExperiencePage() {
                 </>
               ) : modal.type === "memo" ? (
                 <>
-                  <div className="text-xs text-ink-light">
+                  <div className="text-xs text-ink-light mb-2">
                     {locale === "zh" 
-                      ? "输入便签内容，将在墨水屏上显示。" 
-                      : "Enter memo content to display on e-ink screen."}
+                      ? "设置便签标题和内容" 
+                      : "Set memo titles and content (up to 3 groups, empty groups are hidden)"}
                   </div>
-                  <textarea
-                    value={memoDraft}
-                    onChange={(e) => setMemoDraft(e.target.value)}
-                    placeholder={locale === "zh" ? "输入便签内容..." : "Enter memo content..."}
-                    className="w-full rounded-sm border border-ink/20 px-3 py-2 text-sm min-h-32 bg-white"
-                    autoFocus
-                  />
+                  {([1, 2, 3] as const).map((i) => {
+                    const tKey = `title${i}` as keyof typeof memoDraft;
+                    const cKey = `text${i}` as keyof typeof memoDraft;
+                    return (
+                      <div key={i} className="space-y-1">
+                        <label className="text-xs font-medium text-ink-light">
+                          {locale === "zh" ? `标题 ${i}` : `Title ${i}`}
+                          {i > 1 && <span className="text-ink-light/50 ml-1">({locale === "zh" ? "可选" : "optional"})</span>}
+                        </label>
+                        <input
+                          type="text"
+                          value={memoDraft[tKey]}
+                          onChange={(e) => setMemoDraft(prev => ({ ...prev, [tKey]: e.target.value }))}
+                          placeholder={i === 1 
+                            ? (locale === "zh" ? "输入标题，如：今日待办" : "e.g. Today's TODO") 
+                            : (locale === "zh" ? "可选标题" : "Optional title")}
+                          className="w-full rounded-sm border border-ink/20 px-3 py-1.5 text-sm bg-white"
+                          autoFocus={i === 1}
+                        />
+                        <textarea
+                          value={memoDraft[cKey]}
+                          onChange={(e) => setMemoDraft(prev => ({ ...prev, [cKey]: e.target.value }))}
+                          placeholder={locale === "zh" ? "输入便签内容..." : "Enter memo content..."}
+                          className="w-full rounded-sm border border-ink/20 px-3 py-2 text-sm min-h-16 bg-white"
+                        />
+                      </div>
+                    );
+                  })}
                   <div className="flex justify-end pt-2">
                     <Button
                       onClick={async () => {
-                        const m = memoDraft.trim();
                         setModal(null);
-                        if (m) {
-                          await handlePreview(modal.modeId, { memo_text: m });
-                        } else {
-                          await handlePreview(modal.modeId);
+                        const settings: Record<string, string> = {};
+                        for (const i of [1, 2, 3]) {
+                          const tKey = `title${i}` as keyof typeof memoDraft;
+                          const cKey = `text${i}` as keyof typeof memoDraft;
+                          settings[`memo_title_${i}`] = memoDraft[tKey].trim();
+                          settings[`memo_text_${i}`] = memoDraft[cKey].trim();
                         }
+                        await handlePreview(modal.modeId, settings);
                       }}
                       disabled={previewLoading}
                       variant="outline"

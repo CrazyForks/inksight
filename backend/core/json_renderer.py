@@ -919,6 +919,12 @@ def _paint_component_node(ctx: RenderContext, node: ComponentNode, theme: dict, 
             ctx.draw.text((title_x, title_y), title, fill=ctx.resolve_color(node.props), font=title_font)
     for child in node.children:
         _paint_component_node(ctx, child, theme, scale)
+    if node.props.get("border") and box.width > 0 and box.height > 0:
+        bw = _scaled_value(node.props.get("border_width"), scale, 1, 1)
+        ctx.draw.rectangle(
+            [box.x, box.y, box.x + box.width - 1, box.y + box.height - 1],
+            outline=EINK_FG, width=bw,
+        )
 
 
 def _render_component_tree_mode(
@@ -957,6 +963,118 @@ def _render_component_tree_mode(
     if debug_overlay:
         _paint_component_debug_overlay(ctx, root)
     return ctx
+
+
+# ── Decorations ──────────────────────────────────────────────
+
+
+def _load_decoration_image(
+    name: str, size: tuple[int, int], *,
+    image_mode: str = "auto", dither: bool = False,
+) -> Image.Image | None:
+    """Load a decoration image, converting to 1-bit for e-ink display.
+
+    image_mode controls the processing algorithm:
+      "circle"        - crop to circle with border, keep content inside
+      "invert"        - invert colors (for dark-bg icons with white content)
+      "invert_dither" - dither then invert bg to white (best for dark-bg detail)
+      "color_dither"  - remove colored bg via floodfill then dither (colored-bg icons)
+      "auto"          - threshold/dither with transparent white areas
+    """
+    path = _BACKEND_ROOT / "fonts" / "icons" / f"{name}.png"
+    if not path.exists():
+        return None
+    src = Image.open(path).convert("RGBA")
+    src = src.resize(size, Image.LANCZOS)
+    w, h = size
+    gray = src.convert("L")
+
+    if image_mode == "circle":
+        from PIL import ImageDraw as PilDraw
+        r = min(w, h) // 2
+        cx, cy = w // 2, h // 2
+        circle_mask = Image.new("L", size, 0)
+        md = PilDraw.Draw(circle_mask)
+        md.ellipse((cx - r, cy - r, cx + r, cy + r), fill=255)
+        content = gray.point(lambda v: 0 if v < 192 else 255, "1")
+        result = Image.new("1", size, 1)
+        result.paste(content, mask=circle_mask)
+        rd = ImageDraw.Draw(result)
+        rd.ellipse((cx - r, cy - r, cx + r, cy + r), outline=0, width=1)
+        return result
+
+    if image_mode == "invert":
+        inverted = gray.point(lambda v: 0 if v > 128 else 255, "1")
+        alpha = gray.point(lambda v: 255 if v > 64 else 0, "L")
+        result = Image.new("1", size, 1)
+        result.paste(inverted, mask=alpha)
+        return result
+
+    if image_mode == "invert_dither":
+        from PIL import ImageDraw as PilDraw
+        clean = gray.copy()
+        for corner in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
+            if clean.getpixel(corner) < 30:
+                PilDraw.floodfill(clean, corner, 255, thresh=30)
+        return clean.convert("1")
+
+    if image_mode == "color_dither":
+        from PIL import ImageDraw as PilDraw
+        clean = gray.copy()
+        bg_val = sum(clean.getpixel(c) for c in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]) // 4
+        thresh = 40
+        for corner in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
+            if abs(clean.getpixel(corner) - bg_val) <= thresh:
+                PilDraw.floodfill(clean, corner, 255, thresh=thresh)
+        return clean.convert("1")
+
+    if dither:
+        mono = gray.convert("1")
+        alpha = gray.point(lambda v: 255 if v < 220 else 0, "L")
+    else:
+        mono = gray.point(lambda v: 0 if v < 128 else 255, "1")
+        alpha = gray.point(lambda v: 255 if v < 200 else 0, "1")
+    result = Image.new("1", size, 1)
+    result.paste(mono, mask=alpha)
+    return result
+
+
+def _apply_decorations(
+    img: Image.Image,
+    decorations: list[dict],
+    screen_w: int,
+    screen_h: int,
+    status_bar_bottom: int,
+) -> None:
+    """Paste decoration images at absolute positions."""
+    if not decorations:
+        return
+    scale = screen_w / 400.0
+    for dec in decorations:
+        icon_name = dec.get("icon")
+        if not icon_name:
+            continue
+        size = int(dec.get("size", 36) * scale)
+        dither = dec.get("dither", False)
+        image_mode = dec.get("image_mode", "auto")
+        dec_img = _load_decoration_image(
+            icon_name, (size, size), image_mode=image_mode, dither=dither,
+        )
+        if dec_img is None:
+            continue
+        margin = int(dec.get("margin", 8) * scale)
+        anchor = dec.get("anchor", "top_left")
+        if anchor == "top_left":
+            x, y = margin, status_bar_bottom + margin
+        elif anchor == "top_right":
+            x, y = screen_w - size - margin, status_bar_bottom + margin
+        elif anchor == "bottom_left":
+            x, y = margin, screen_h - size - margin
+        elif anchor == "bottom_right":
+            x, y = screen_w - size - margin, screen_h - size - margin
+        else:
+            x, y = margin, status_bar_bottom + margin
+        paste_icon_onto(img, dec_img, (x, y))
 
 
 # ── Public API ───────────────────────────────────────────────
@@ -1077,6 +1195,8 @@ def render_json_mode(
                 if ctx.y >= footer_top - 10:
                     break
                 _render_block(ctx, block)
+
+    _apply_decorations(img, layout.get("decorations", []), screen_w, screen_h, status_bar_bottom)
 
     ft = ft_layout
     mode_id = mode_def.get("mode_id", "")

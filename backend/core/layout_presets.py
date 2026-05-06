@@ -903,6 +903,90 @@ def _quote_focus_card(props: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _memo_card(props: dict[str, Any]) -> dict[str, Any]:
+    item_children: list[dict[str, Any]] = [
+        _text_node(
+            field="title",
+            font=props.get("title_font", "noto_serif_bold"),
+            font_name=props.get("title_font_name"),
+            font_size=props.get("title_font_size", 18),
+            align=props.get("text_align", "left"),
+            align_y="top",
+            max_lines=1,
+        ),
+        {
+            "type": "box",
+            "padding_x": props.get("text_inset_x", 0),
+            "children": [
+                _text_node(
+                    field="text",
+                    font=props.get("text_font"),
+                    font_name=props.get("text_font_name"),
+                    font_size=props.get("text_font_size", 14),
+                    align=props.get("text_align", "left"),
+                    align_y="top",
+                    max_lines=props.get("text_max_lines", 3),
+                )
+            ],
+        },
+    ]
+    children: list[dict[str, Any]] = [
+        {
+            "type": "repeat",
+            "field": "memo_items",
+            "limit": int(props.get("sections", 3)),
+            "item": {
+                "type": "column",
+                "gap": props.get("section_gap", 8),
+                "children": item_children,
+            },
+        }
+    ]
+    return _compact(
+        {
+            "type": "column",
+            "padding_x": props.get("padding_x", 30),
+            "padding_y": props.get("padding_y", 8),
+            "justify": props.get("justify", "top"),
+            "gap": props.get("gap", 4),
+            "children": children,
+        }
+    )
+
+
+def _habit_card(props: dict[str, Any]) -> dict[str, Any]:
+    children: list[dict[str, Any]] = [
+        _text_node(
+            field=str(props.get("list_field", "habit_list")),
+            font=props.get("list_font"),
+            font_name=props.get("list_font_name"),
+            font_size=props.get("list_font_size", 16),
+            align="left",
+            align_y="top",
+            max_lines=props.get("list_max_lines", 10),
+        ),
+        _text_node(
+            field=str(props.get("footer_field", "habit_footer")),
+            font=props.get("footer_font"),
+            font_name=props.get("footer_font_name"),
+            font_size=props.get("footer_font_size", 14),
+            align="left",
+            align_y="bottom",
+            max_lines=1,
+        ),
+    ]
+    return _compact(
+        {
+            "type": "column",
+            "padding_x": props.get("padding_x", 24),
+            "padding_y": props.get("padding_y", 8),
+            "justify": props.get("justify", "space_between"),
+            "gap": props.get("gap", 6),
+            "children": children,
+        }
+    )
+
+
 def _zen_focus_card(props: dict[str, Any]) -> dict[str, Any]:
     children: list[dict[str, Any]] = [
         {
@@ -1957,6 +2041,16 @@ PRESET_REGISTRY: dict[str, PresetSpec] = {
         builder=_quote_focus_card,
         props=("padding_x", "padding_y", "justify", "gap", "quote_inset_x", "quote_field", "quote_font", "quote_font_name", "quote_font_size", "quote_align_y", "quote_max_lines"),
         defaults={"quote_field": "quote", "quote_font": "noto_serif_light", "quote_font_size": 22, "quote_align_y": "center", "quote_max_lines": 6, "quote_inset_x": 24, "padding_x": 18, "padding_y": 10, "justify": "center", "gap": 6},
+    ),
+    "memo_card": PresetSpec(
+        builder=_memo_card,
+        props=("padding_x", "padding_y", "justify", "gap", "sections", "title_prefix", "text_prefix", "title_field", "title_font", "title_font_name", "title_font_size", "text_field", "text_font", "text_font_name", "text_font_size", "text_align", "text_max_lines", "text_inset_x"),
+        defaults={"text_font": "noto_serif_light", "text_font_size": 14, "text_align": "left", "text_max_lines": 3, "text_inset_x": 0, "title_font": "noto_serif_bold", "title_font_size": 18, "padding_x": 30, "padding_y": 8, "justify": "top", "gap": 4},
+    ),
+    "habit_card": PresetSpec(
+        builder=_habit_card,
+        props=("padding_x", "padding_y", "justify", "gap", "list_field", "list_font", "list_font_name", "list_font_size", "list_max_lines", "footer_field", "footer_font", "footer_font_name", "footer_font_size"),
+        defaults={"list_field": "habit_list", "list_font": "noto_serif_light", "list_font_size": 16, "list_max_lines": 10, "footer_field": "habit_footer", "footer_font": "noto_serif_light", "footer_font_size": 14, "padding_x": 24, "padding_y": 8, "justify": "space_between", "gap": 6},
     ),
     "zen_focus_card": PresetSpec(
         builder=_zen_focus_card,
