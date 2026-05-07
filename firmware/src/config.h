@@ -14,6 +14,17 @@
 #define PIN_CFG_BTN    9
 #define PIN_LED        3
 #define PIN_AI_CHAT_SW -1
+#elif defined(BOARD_PROFILE_ESP32_C3_WROOM02)
+#define PIN_EPD_MOSI   6
+#define PIN_EPD_SCK    4
+#define PIN_EPD_CS     7
+#define PIN_EPD_DC     1
+#define PIN_EPD_RST    2
+#define PIN_EPD_BUSY   10
+#define PIN_BAT_ADC    0
+#define PIN_CFG_BTN    9
+#define PIN_LED        5
+#define PIN_AI_CHAT_SW -1
 #elif defined(BOARD_PROFILE_ESP32_WROOM32E)
 #define PIN_EPD_MOSI   14
 #define PIN_EPD_SCK    13
@@ -25,6 +36,19 @@
 #define PIN_CFG_BTN    0
 #define PIN_LED        2
 #define PIN_AI_CHAT_SW 23
+#elif defined(BOARD_PROFILE_SMT_C3)
+#define PIN_EPD_MOSI   6
+#define PIN_EPD_SCK    4
+#define PIN_EPD_CS     7
+#define PIN_EPD_DC     1
+#define PIN_EPD_RST    2
+#define PIN_EPD_BUSY   10
+#define PIN_BAT_ADC    0
+#ifndef PIN_CFG_BTN
+#define PIN_CFG_BTN    9
+#endif
+#define PIN_LED        5
+#define PIN_AI_CHAT_SW -1
 #else
 #error "Unsupported board profile"
 #endif

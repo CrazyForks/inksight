@@ -553,6 +553,10 @@ static void runVoiceLoop(AudioService &audioService) {
 void setup() {
     Serial.begin(115200);
     delay(3000);
+#if defined(BOARD_PROFILE_ESP32_C3_WROOM02)
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);
+#endif
     Serial.println("\n=== InkSight Voice ===");
 
     ledInit();
@@ -660,6 +664,10 @@ static bool decodeVoiceBmpToFrameBuffer(const uint8_t *bmpBytes, size_t bmpLen);
 void setup() {
     Serial.begin(115200);
     delay(3000);
+#if defined(BOARD_PROFILE_ESP32_C3_WROOM02)
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);
+#endif
     Serial.println("\n=== InkSight ===");
 
     gpioInit();
