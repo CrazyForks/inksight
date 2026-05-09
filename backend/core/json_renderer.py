@@ -222,10 +222,11 @@ class RenderContext:
     available_width: int = SCREEN_WIDTH
     footer_height: int = 30
     colors: int = 2
+    footer_top_offset: int = 0
 
     @property
     def scale(self) -> float:
-        return self.screen_w / 400.0
+        return max(0.92, self.screen_w / 400.0)
 
     @property
     def h_scale(self) -> float:
@@ -234,7 +235,7 @@ class RenderContext:
     @property
     def min_scale(self) -> float:
         """Conservative scale factor based on the more constrained dimension."""
-        return min(self.scale, self.h_scale)
+        return max(0.65, min(self.scale, self.h_scale))
 
     def __post_init__(self):
         if self.available_width == SCREEN_WIDTH and self.screen_w != SCREEN_WIDTH:
@@ -242,7 +243,7 @@ class RenderContext:
 
     @property
     def footer_top(self) -> int:
-        return self.screen_h - self.footer_height
+        return self.screen_h - self.footer_height + self.footer_top_offset
 
     def resolve(self, template: str) -> str:
         """Resolve {field} placeholders against content dict."""
@@ -574,6 +575,13 @@ def _measure_component_node(node: ComponentNode, available_width: int | None, th
     if node.kind == "separator":
         _measure_component_separator(node, available_width, scale)
         return
+    if node.kind == "spacer":
+        sh_raw = node.props.get("height", node.props.get("min_height", 6))
+        sh = _scaled_value(sh_raw, scale, 6, 1)
+        node.measured_width = available_width if available_width is not None else 0
+        node.measured_height = max(0, int(sh))
+        node.draw_data = {}
+        return
     if node.kind == "repeat":
         gap = _scaled_value(node.props.get("gap"), scale)
         total_height = 0
@@ -749,6 +757,13 @@ def _layout_component_node(node: ComponentNode, x: int, y: int, width: int, heig
                 cursor_y += extra
             elif justify == "space_between" and len(visible_children) > 1:
                 gap_step = gap + extra // (len(visible_children) - 1)
+        bias_px = node.props.get("content_bias_px")
+        if bias_px is not None:
+            try:
+                cursor_y -= int(bias_px)
+            except (TypeError, ValueError):
+                pass
+            cursor_y = max(inner_y, cursor_y)
         for idx, child in enumerate(visible_children):
             child_height = child.measured_height
             grow = _component_grow(child)
@@ -823,6 +838,8 @@ def _layout_component_node(node: ComponentNode, x: int, y: int, width: int, heig
 def _paint_component_node(ctx: RenderContext, node: ComponentNode, theme: dict, scale: float) -> None:
     box = node.box
     if box is None:
+        return
+    if node.kind == "spacer":
         return
     if node.kind == "text":
         font = node.draw_data.get("font")
@@ -938,6 +955,7 @@ def _render_component_tree_mode(
     screen_h: int,
     status_bar_bottom: int,
     footer_height: int,
+    footer_top_offset: int = 0,
     colors: int,
 ) -> RenderContext:
     ctx = RenderContext(
@@ -948,6 +966,7 @@ def _render_component_tree_mode(
         screen_h=screen_h,
         y=status_bar_bottom,
         footer_height=footer_height,
+        footer_top_offset=footer_top_offset,
         colors=colors,
     )
     scale = ctx.scale
@@ -1111,23 +1130,49 @@ def render_json_mode(
     layout = expand_layout_presets(layout)
 
     sb = layout.get("status_bar", {})
-    draw_status_bar(
-        draw, img, date_str, weather_str, int(battery_pct), weather_code,
+    ft_layout = layout.get("footer", {})
+    status_bar_pct = 0.10 if screen_h < 200 else 0.12
+    # 296×128：旧 draw_status_bar 横线在 int(h*0.11)（约 14px）；若用 int(h*0.10)+2 与之相同，视觉上“没下移”
+    if screen_h <= 128:
+        status_bar_bottom = int(screen_h * 0.11) + 2
+    else:
+        status_bar_bottom = int(screen_h * status_bar_pct)
+
+    _dsb_kw: dict[str, Any] = dict(
+        draw=draw,
+        img=img,
+        date_str=date_str,
+        weather_str=weather_str,
+        battery_pct=int(battery_pct),
+        weather_code=weather_code,
         line_width=sb.get("line_width", 1),
         dashed=sb.get("dashed", False),
         time_str=time_str,
-        screen_w=screen_w, screen_h=screen_h,
+        screen_w=screen_w,
+        screen_h=screen_h,
         colors=colors,
         language=language,
     )
+    if screen_h <= 128:
+        _dsb_kw["separator_y"] = status_bar_bottom
+    draw_status_bar(**_dsb_kw)
 
-    ft_layout = layout.get("footer", {})
-    status_bar_pct = 0.10 if screen_h < 200 else 0.12
-    status_bar_bottom = int(screen_h * status_bar_pct)
     scale = screen_w / 400.0
+    if scale < 0.92:
+        scale = 0.92
     min_scale = min(scale, screen_h / 300.0)
+    if min_scale < 0.65:
+        min_scale = 0.65
     footer_height = int(ft_layout.get("height", 30) * min_scale)
+    # 2.9"（128px 高等）：页脚要容纳图标 + 左右文案，缩放后仍须足够高度，否则会贴底
+    if screen_h <= 128:
+        footer_height = max(footer_height, 24)
     footer_top = screen_h - footer_height
+    # 页脚顶部分隔线相对「内容上边界」下移 2–3px，与 draw_footer(y_line) 一致
+    footer_top_offset = 0
+    if screen_h <= 128:
+        footer_top_offset = 3
+        footer_top += footer_top_offset
 
     body = layout.get("body", [])
     if _uses_component_tree(body, layout):
@@ -1144,6 +1189,7 @@ def render_json_mode(
             screen_h=screen_h,
             status_bar_bottom=status_bar_bottom,
             footer_height=footer_height,
+            footer_top_offset=footer_top_offset,
             colors=colors,
         )
     else:
@@ -1157,7 +1203,7 @@ def render_json_mode(
             ctx = RenderContext(
                 draw=draw, img=img, content=content,
                 screen_w=screen_w, screen_h=screen_h,
-                y=status_bar_bottom, footer_height=footer_height, colors=colors,
+                y=status_bar_bottom, footer_height=footer_height, footer_top_offset=footer_top_offset, colors=colors,
             )
             _render_centered_text(ctx, body[0], use_full_body=True)
         elif body_align == "center" and body:
@@ -1165,7 +1211,7 @@ def render_json_mode(
             measure_ctx = RenderContext(
                 draw=ImageDraw.Draw(measure_img), img=measure_img, content=content,
                 screen_w=screen_w, screen_h=screen_h,
-                y=status_bar_bottom, footer_height=footer_height,
+                y=status_bar_bottom, footer_height=footer_height, footer_top_offset=footer_top_offset,
             )
             apply_text_fontmode(measure_ctx.draw)
             for block in body:
@@ -1179,7 +1225,8 @@ def render_json_mode(
             ctx = RenderContext(
                 draw=draw, img=img, content=content,
                 screen_w=screen_w, screen_h=screen_h,
-                y=status_bar_bottom + offset, footer_height=footer_height, colors=colors,
+                y=status_bar_bottom + offset, footer_height=footer_height, footer_top_offset=footer_top_offset,
+                colors=colors,
             )
             for block in body:
                 if ctx.y >= footer_top - 10:
@@ -1189,7 +1236,7 @@ def render_json_mode(
             ctx = RenderContext(
                 draw=draw, img=img, content=content,
                 screen_w=screen_w, screen_h=screen_h,
-                y=status_bar_bottom, footer_height=footer_height, colors=colors,
+                y=status_bar_bottom, footer_height=footer_height, footer_top_offset=footer_top_offset, colors=colors,
             )
             for block in body:
                 if ctx.y >= footer_top - 10:
@@ -1215,6 +1262,7 @@ def render_json_mode(
         attr_font_size=_attr_font_size,
         screen_w=screen_w, screen_h=screen_h,
         colors=colors,
+        footer_top=footer_top,
     )
 
     return img
@@ -1543,7 +1591,19 @@ def _render_conditional(ctx: RenderContext, block: dict) -> None:
 
 
 def _render_spacer(ctx: RenderContext, block: dict) -> None:
-    ctx.y += int(block.get("height", 12) * ctx.min_scale)
+    # Use horizontal scale like font_size/margins—not min_scale (which clamps hard on low
+    # heights and makes small height tweaks round to negligible pixel deltas).
+    if block.get("height_px") is not None:
+        try:
+            ctx.y += max(0, int(block["height_px"]))
+        except (TypeError, ValueError):
+            ctx.y += 0
+        return
+    try:
+        h = float(block.get("height", 12))
+    except (TypeError, ValueError):
+        h = 12.0
+    ctx.y += max(0, int(round(h * ctx.scale)))
 
 
 def _render_icon_text(ctx: RenderContext, block: dict) -> None:
@@ -1644,7 +1704,39 @@ def _render_weather_icon_text(ctx: RenderContext, block: dict) -> None:
 
     ctx.draw.text((x - bbox[0], y - bbox[1] + text_y_offset), text, fill=ctx.resolve_color(block), font=font)
     text_height = bbox[3] - bbox[1]
-    ctx.y += max(icon_size, text_height) + margin_bottom
+    text_ink_left = x - bbox[0]
+    text_w = bbox[2] - bbox[0]
+
+    suffix_field = block.get("suffix_field")
+    suffix_gap = int(block.get("suffix_gap", 8) * ctx.scale)
+    suffix_font_size_raw = block.get("suffix_font_size")
+    suffix_sz = (
+        int(suffix_font_size_raw * ctx.scale)
+        if suffix_font_size_raw is not None
+        else font_size
+    )
+    suffix_font_key = block.get("suffix_font", font_key)
+
+    suffix_height = 0
+    if suffix_field and align == "left":
+        suffix_text_raw = str(ctx.get_field(suffix_field)).strip()
+        if suffix_text_raw:
+            suf_font_k = suffix_font_key
+            if has_cjk(suffix_text_raw):
+                suf_font_k = _pick_cjk_font(suf_font_k)
+            sfont = load_font(suf_font_k, suffix_sz)
+            sbox = sfont.getbbox(suffix_text_raw)
+            suffix_height = sbox[3] - sbox[1]
+            suf_x = text_ink_left + text_w + suffix_gap - sbox[0]
+            suf_y_in = y - sbox[1] + text_y_offset
+            ctx.draw.text((suf_x, suf_y_in), suffix_text_raw, fill=ctx.resolve_color(block), font=sfont)
+
+    row_draw_h = max(
+        icon_size + max(0, icon_y_offset) if icon_present else 0,
+        text_height + abs(text_y_offset),
+        suffix_height + abs(text_y_offset),
+    )
+    ctx.y += row_draw_h + margin_bottom
 
 
 def _render_big_number(ctx: RenderContext, block: dict) -> None:
@@ -1947,9 +2039,44 @@ def _render_forecast_cards(ctx: RenderContext, block: dict) -> None:
     ctx.y = card_bottom_max + margin_bottom
 
 
+def _measure_column_blocks_height(
+    ctx: RenderContext,
+    blocks: list,
+    *,
+    x_offset: int,
+    available_width: int,
+) -> int:
+    """Total vertical advance Y if ``blocks`` were rendered at y=0 (off-screen bitmap). Used for valign in two_column."""
+    if not blocks:
+        return 0
+    w, h = max(1, ctx.screen_w), max(1, ctx.screen_h)
+    measure_img = Image.new("1", (w, h), EINK_BG)
+    measure_draw = ImageDraw.Draw(measure_img)
+    apply_text_fontmode(measure_draw)
+    mc = RenderContext(
+        draw=measure_draw,
+        img=measure_img,
+        content=ctx.content,
+        screen_w=ctx.screen_w,
+        screen_h=ctx.screen_h,
+        y=0,
+        x_offset=x_offset,
+        available_width=available_width,
+        footer_height=ctx.footer_height,
+        footer_top_offset=ctx.footer_top_offset,
+        colors=ctx.colors,
+    )
+    for child in blocks:
+        if mc.y >= ctx.footer_top - 10:
+            break
+        _render_block(mc, child)
+    return max(0, mc.y)
+
+
 def _render_two_column(ctx: RenderContext, block: dict) -> None:
-    # Auto-downgrade to single column on very short screens
-    if ctx.screen_h < 200:
+    # Very short screens: stack left then right vertically (saves horizontal space was wrong on 296-wide).
+    # Weather 296x128 passes stack_when_short: false for a true split column layout.
+    if ctx.screen_h < 200 and block.get("stack_when_short", True):
         for child in block.get("left", []):
             if ctx.y >= ctx.footer_top - 10:
                 break
@@ -1964,22 +2091,65 @@ def _render_two_column(ctx: RenderContext, block: dict) -> None:
     gap = int(block.get("gap", 8) * ctx.scale)
     left_x = int(block.get("left_x", 0) * ctx.scale) + ctx.x_offset
     right_x = left_x + left_width + gap
+    right_avail = max(0, ctx.screen_w - right_x)
+    lv = str(block.get("left_valign", "top") or "top").lower()
+    rv = str(block.get("right_valign", "top") or "top").lower()
+    measure_valign = any(v in ("center", "bottom") for v in (lv, rv))
+
+    row_y0 = ctx.y
+    left_h = right_h = 0
+    if measure_valign:
+        left_h = _measure_column_blocks_height(
+            ctx, block.get("left", []), x_offset=left_x, available_width=left_width
+        )
+        right_h = _measure_column_blocks_height(
+            ctx, block.get("right", []), x_offset=right_x, available_width=right_avail
+        )
+    row_h_base = max(left_h, right_h) if measure_valign else 0
+    row_min_design = block.get("row_min_height")
+    if measure_valign and row_min_design is not None:
+        try:
+            row_h = max(row_h_base, int(float(row_min_design) * ctx.scale))
+        except (TypeError, ValueError):
+            row_h = row_h_base
+    else:
+        row_h = row_h_base
+
+    left_extra_px = int(block.get("left_offset_px") or 0)
+    right_extra_px = int(block.get("right_offset_px") or 0)
+
+    def _valign_delta(content_h: int, mode: str) -> int:
+        if not measure_valign or mode == "top":
+            return 0
+        if mode == "center":
+            return max(0, (row_h - content_h) // 2)
+        if mode == "bottom":
+            return max(0, row_h - content_h)
+        return 0
+
+    left_dy = _valign_delta(left_h, lv) + left_extra_px
+    right_dy = _valign_delta(right_h, rv) + right_extra_px
+
     left_ctx = RenderContext(
         draw=ctx.draw, img=ctx.img, content=ctx.content,
-        screen_w=ctx.screen_w, screen_h=ctx.screen_h, y=ctx.y,
+        screen_w=ctx.screen_w, screen_h=ctx.screen_h, y=row_y0 + left_dy,
         x_offset=left_x, available_width=left_width,
         footer_height=ctx.footer_height,
+        footer_top_offset=ctx.footer_top_offset,
     )
     right_ctx = RenderContext(
         draw=ctx.draw, img=ctx.img, content=ctx.content,
-        screen_w=ctx.screen_w, screen_h=ctx.screen_h, y=ctx.y,
-        x_offset=right_x, available_width=max(0, ctx.screen_w - right_x),
+        screen_w=ctx.screen_w, screen_h=ctx.screen_h, y=row_y0 + right_dy,
+        x_offset=right_x, available_width=right_avail,
         footer_height=ctx.footer_height,
+        footer_top_offset=ctx.footer_top_offset,
     )
     for child in block.get("left", []):
         _render_block(left_ctx, child)
     for child in block.get("right", []):
         _render_block(right_ctx, child)
+    # row_h / valign only offsets children; advancing ctx.y by row_y0+row_h would reserve
+    # blank space below the columns and clip following body blocks (e.g. WEATHER advice on 296x128).
     ctx.y = max(left_ctx.y, right_ctx.y)
 
 

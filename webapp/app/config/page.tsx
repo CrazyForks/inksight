@@ -786,6 +786,8 @@ function ConfigPageInner() {
   const [previewStatusText, setPreviewStatusText] = useState("");
   const [previewMode, setPreviewMode] = useState("");
   const [previewColors, setPreviewColors] = useState(2);
+  const [previewWidth, setPreviewWidth] = useState(400);
+  const [previewHeight, setPreviewHeight] = useState(300);
   const [previewNoCacheOnce, setPreviewNoCacheOnce] = useState(false);
   const [previewCacheHit, setPreviewCacheHit] = useState<boolean | null>(null);
   const [previewLlmStatus, setPreviewLlmStatus] = useState<string | null>(null);
@@ -1018,7 +1020,7 @@ function ConfigPageInner() {
       const res = await fetch("/api/modes/custom/preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode_def: modeDef, mac: mac || undefined, colors: previewColors, layout_only: true }),
+        body: JSON.stringify({ mode_def: modeDef, mac: mac || undefined, colors: previewColors, w: previewWidth, h: previewHeight, layout_only: true }),
       });
       if (!res.ok) {
         setComposerPreviewUrl(null);
@@ -1455,6 +1457,8 @@ function ConfigPageInner() {
     if (clearSavedOverride && m === "COUNTDOWN") {
       params.set("mode_override", JSON.stringify({ countdownEvents: [] }));
       if (previewColors > 2) params.set("colors", String(previewColors));
+      params.set("w", String(previewWidth));
+      params.set("h", String(previewHeight));
       if (forceFresh) params.set("no_cache", "1");
       return { m, params, consumeNoCacheOnce };
     }
@@ -1514,9 +1518,11 @@ function ConfigPageInner() {
     }
     if (locationChanged && effectiveLocation.city) params.set("city_override", effectiveLocation.city);
     if (previewColors > 2) params.set("colors", String(previewColors));
+    params.set("w", String(previewWidth));
+    params.set("h", String(previewHeight));
     if (forceFresh || locationChanged || hasModeOverride) params.set("no_cache", "1");
     return { m, params, consumeNoCacheOnce };
-  }, [config, currentLocation, mac, memoText, modeOverrides, previewColors, previewMode, previewNoCacheOnce, sanitizeModeOverride]);
+  }, [config, currentLocation, mac, memoText, modeOverrides, previewColors, previewWidth, previewHeight, previewMode, previewNoCacheOnce, sanitizeModeOverride]);
 
   const ownerUsername = useMemo(
     () => deviceMembers.find((member) => member.role === "owner")?.username || "",
@@ -1915,7 +1921,7 @@ function ConfigPageInner() {
       const res = await fetch("/api/modes/custom/preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode_def: def, mac: mac || undefined, colors: previewColors }),
+        body: JSON.stringify({ mode_def: def, mac: mac || undefined, colors: previewColors, w: previewWidth, h: previewHeight }),
       });
 
       // 额度不足：返回 402
@@ -2633,10 +2639,15 @@ function ConfigPageInner() {
                     onCreateCustomMode={openCreateCustomMode}
                     previewColors={previewColors}
                     onColorsChange={setPreviewColors}
+                    previewWidth={previewWidth}
+                    previewHeight={previewHeight}
+                    onScreenSizeChange={(w, h) => { setPreviewWidth(w); setPreviewHeight(h); }}
                   />
 
                   <div ref={previewPanelRef}>
                   <EInkPreviewPanel
+                    screenW={previewWidth}
+                    screenH={previewHeight}
                     tr={tr}
                     previewModeLabel={
                       previewModeLabelOverride ||

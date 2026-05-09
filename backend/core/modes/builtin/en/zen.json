@@ -80,7 +80,8 @@
         "padding_x": 8,
         "word_inset_x": 44,
         "word_font_size": 32,
-        "source_field": null
+        "source_field": null,
+        "content_bias_px": 8
       },
       "footer": {
         "label": "Zen",

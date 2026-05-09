@@ -47,7 +47,7 @@ _font_warned: set[str] = set()
 _bitmap_warned: set[str] = set()
 _font_engine = os.getenv("INKSIGHT_FONT_ENGINE", "bitmap").strip().lower()
 _force_bitmap = _font_engine in {"bitmap", "pixel", "pil"}
-_fontmode = os.getenv("INKSIGHT_TEXT_FONTMODE", "1").strip()
+_fontmode = os.getenv("INKSIGHT_TEXT_FONTMODE", "L").strip()
 _bitmap_suffix_to_load_size = {9: 12, 10: 13, 11: 15, 12: 16, 13: 14}
 _bitmap_max_request_size = int(os.getenv("INKSIGHT_BITMAP_MAX_REQUEST_SIZE", "16"))
 
@@ -258,6 +258,7 @@ def draw_status_bar(
     screen_h: int = SCREEN_HEIGHT,
     colors: int = 2,
     language: str = "zh",
+    separator_y: int | None = None,
 ):
     """绘制顶部状态栏"""
     is_en = language == "en"
@@ -352,7 +353,10 @@ def draw_status_bar(
 
     draw.text((bx + batt_box_w + int(6 * scale), y), batt_text, fill=batt_fill, font=font_en)
 
-    line_y = int(screen_h * 0.11)
+    if separator_y is not None:
+        line_y = max(0, min(int(separator_y), max(0, screen_h - 1)))
+    else:
+        line_y = int(screen_h * 0.11)
     if dashed:
         draw_dashed_line(draw, (0, line_y), (screen_w, line_y), fill=EINK_FG, width=line_width)
     else:
@@ -378,15 +382,23 @@ def draw_footer(
     screen_w: int = SCREEN_WIDTH,
     screen_h: int = SCREEN_HEIGHT,
     colors: int = 2,
+    footer_top: int | None = None,
 ):
-    """绘制底部页脚"""
+    """绘制底部页脚。
+
+    ``footer_top`` 由 JSON 渲染器传入时表示正文与页脚分界线（与预留的 footer 高度一致）。
+    在 296×128 等小高度屏上必须用该值对齐，否则会按百分比把文字画到屏幕外而被裁切。
+    """
     scale = screen_w / 400.0
     if attr_font_size is None:
         attr_font_size = int(FONT_SIZES["footer"]["attribution"] * scale)
 
-    # Smaller footer on short screens
-    footer_pct = 0.08 if screen_h < 200 else 0.10
-    y_line = screen_h - int(screen_h * footer_pct)
+    if footer_top is not None:
+        y_line = max(0, min(int(footer_top), max(0, screen_h - 2)))
+    else:
+        footer_pct = 0.08 if screen_h < 200 else 0.10
+        y_line = screen_h - int(screen_h * footer_pct)
+
     if dashed:
         draw_dashed_line(
             draw, (0, y_line), (screen_w, y_line), fill=EINK_FG, width=line_width
@@ -394,7 +406,8 @@ def draw_footer(
     else:
         draw.line([(0, y_line), (screen_w, y_line)], fill=EINK_FG, width=line_width)
 
-    font_label = load_font("inter_medium", int(FONT_SIZES["footer"]["label"] * scale))
+    label_pt = max(6, int(FONT_SIZES["footer"]["label"] * scale))
+    font_label = load_font("inter_medium", label_pt)
     if attr_font:
         font_attr = load_font_by_name(attr_font, attr_font_size)
     elif attribution and has_cjk(attribution):
@@ -403,7 +416,6 @@ def draw_footer(
         font_attr = load_font("lora_regular", attr_font_size)
 
     icon_x = int(12 * scale)
-    icon_y = y_line + int(9 * scale)
     icon_key = str(mode_id or mode)
     mode_icon = None
     if icon_key.upper() == "WEATHER" and weather_code is not None:
@@ -413,18 +425,60 @@ def draw_footer(
             mode_icon = None
     if mode_icon is None:
         mode_icon = get_mode_icon(icon_key)
+    icon_h = mode_icon.height if mode_icon else 0
+
+    lb = font_label.getbbox("Mg")
+    lab_h = max(1, lb[3] - lb[1])
+    ab = font_attr.getbbox("Mg")
+    aab_h = max(1, ab[3] - ab[1])
+    text_h = max(lab_h, aab_h)
+    row_h = max(text_h, icon_h)
+
+    inner_top = y_line + line_width
+    band_h = max(0, screen_h - inner_top)
+
+    if band_h >= row_h:
+        text_y = inner_top + (band_h - row_h) // 2
+    else:
+        text_y = inner_top
+    max_bottom = screen_h - 3  # 底边留白，避开胶框遮挡感
+    label_upper = mode.upper()
+    attrib_pad_r = int(12 * scale)
+    attrib_anchor_x = screen_w - attrib_pad_r
+
+    label_x_base = icon_x + (int(15 * scale) if mode_icon else 0)
+
+    def _clamp_text_y(ty: int) -> int:
+        lbl_bb = draw.textbbox((label_x_base, ty), label_upper, font=font_label)
+        bottom = lbl_bb[3]
+        if attribution:
+            ab0 = draw.textbbox((0, 0), attribution, font=font_attr)
+            att_w = ab0[2] - ab0[0]
+            ax = attrib_anchor_x - att_w
+            att_bb = draw.textbbox((ax, ty), attribution, font=font_attr)
+            bottom = max(bottom, att_bb[3])
+        if bottom <= max_bottom:
+            return ty
+        shift = bottom - max_bottom
+        return max(inner_top, ty - shift)
+
+    text_y = _clamp_text_y(text_y)
+
     if mode_icon:
         icon_fill = EINK_COLOR_NAME_MAP.get("red", EINK_FG) if colors >= 3 else EINK_FG
+        icon_y = text_y + max(0, (row_h - icon_h) // 2)
         paste_icon_onto(img, mode_icon, (icon_x, icon_y), fill=icon_fill)
         label_x = icon_x + int(15 * scale)
     else:
         label_x = icon_x
-    draw.text((label_x, y_line + int(9 * scale)), mode.upper(), fill=EINK_FG, font=font_label)
+
+    draw.text((label_x, text_y), label_upper, fill=EINK_FG, font=font_label)
 
     if attribution:
         bbox = draw.textbbox((0, 0), attribution, font=font_attr)
+        att_w = bbox[2] - bbox[0]
         draw.text(
-            (screen_w - int(12 * scale) - (bbox[2] - bbox[0]), y_line + int(9 * scale)),
+            (attrib_anchor_x - att_w, text_y),
             attribution,
             fill=EINK_FG,
             font=font_attr,

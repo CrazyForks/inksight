@@ -759,6 +759,127 @@ def _daily_card(props: dict[str, Any]) -> dict[str, Any]:
                 ],
             }
         )
+    if variant == "narrow_columns":
+        yf = str(props.get("year_field", "year"))
+        mf = str(props.get("month_field", "month_cn"))
+        wf = str(props.get("weekday_field", "weekday_cn"))
+        default_year_tpl = "{" + yf + "}" + str(props.get("year_suffix", "年"))
+        mw_gap = props.get("between_month_weekday_gap") or 0
+        try:
+            mw_gap_int = max(0, int(mw_gap))
+        except (TypeError, ValueError):
+            mw_gap_int = 0
+        left_children: list[Any] = [
+                                    _build_fragment_instance(
+                                        "plain_text",
+                                        {
+                                            "template": props.get("year_template", default_year_tpl),
+                                            "font": props.get("year_font"),
+                                            "font_name": props.get("year_font_name"),
+                                            "font_size": props.get("year_font_size", 10),
+                                            "align": props.get("year_align", "left"),
+                                            "max_lines": 1,
+                                        },
+                                    ),
+                                    {
+                                        "type": "big_number",
+                                        "field": str(props.get("day_field", "day")),
+                                        "font_size": props.get("day_font_size", 28),
+                                        "align": props.get("day_align", "left"),
+                                    },
+                                    _build_fragment_instance(
+                                        "plain_text",
+                                        {
+                                            "field": mf,
+                                            "font": props.get("month_font"),
+                                            "font_name": props.get("month_font_name"),
+                                            "font_size": props.get("month_font_size", 11),
+                                            "align": props.get("month_align", "left"),
+                                            "max_lines": 1,
+                                        },
+                                    ),
+        ]
+        if mw_gap_int > 0:
+            left_children.append({"type": "spacer", "height": mw_gap_int})
+        left_children.append(
+                                    _build_fragment_instance(
+                                        "plain_text",
+                                        {
+                                            "field": wf,
+                                            "font": props.get("weekday_font"),
+                                            "font_name": props.get("weekday_font_name"),
+                                            "font_size": props.get("weekday_font_size", 10),
+                                            "align": props.get("weekday_align", "left"),
+                                            "max_lines": 1,
+                                        },
+                                    )
+        )
+        return _compact(
+            {
+                "type": "column",
+                "padding_x": props.get("padding_x", 8),
+                "justify": props.get("narrow_outer_justify", "center"),
+                "gap": props.get("narrow_outer_gap", 0),
+                "children": [
+                    {
+                        "type": "row",
+                        "gap": props.get("col_gap", 6),
+                        "align": "stretch",
+                        "children": [
+                            {
+                                "type": "column",
+                                "width": props.get("left_col_width", 76),
+                                "justify": props.get("left_justify", "center"),
+                                "gap": props.get("left_gap", 3),
+                                "children": left_children,
+                            },
+                            {
+                                "type": "column",
+                                "grow": 1,
+                                "padding_x": props.get("content_padding_x", 0),
+                                "justify": props.get("right_justify", "space_between"),
+                                "gap": props.get("right_gap", 4),
+                                "children": [
+                                    _build_fragment_instance(
+                                        "quote_block",
+                                        {
+                                            "quote_field": props.get("quote_field", "quote"),
+                                            "quote_font": props.get("quote_font"),
+                                            "quote_font_name": props.get("quote_font_name"),
+                                            "quote_font_size": props.get("quote_font_size", 11),
+                                            "quote_align": "left",
+                                            "quote_align_y": props.get("quote_align_y"),
+                                            "quote_max_lines": props.get("quote_max_lines", 2),
+                                            "author_template": props.get("author_template", "— {author}"),
+                                            "author_font": props.get("author_font"),
+                                            "author_font_name": props.get("author_font_name"),
+                                            "author_font_size": props.get("author_font_size", 9),
+                                            "author_align": "right",
+                                            "author_align_y": props.get("author_align_y"),
+                                            "author_max_lines": props.get("author_max_lines", 1),
+                                            "show_divider": False,
+                                            "gap": props.get("quote_gap", 2),
+                                        },
+                                    ),
+                                    _build_fragment_instance(
+                                        "plain_text",
+                                        {
+                                            "field": props.get("tip_field", "tip"),
+                                            "font": props.get("tip_font"),
+                                            "font_name": props.get("tip_font_name"),
+                                            "font_size": props.get("tip_font_size", 9),
+                                            "align": props.get("tip_align", "left"),
+                                            "align_y": props.get("tip_align_y"),
+                                            "max_lines": props.get("tip_max_lines", 2),
+                                        },
+                                    ),
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }
+        )
     return _compact(
         {
             "type": "column",
@@ -1027,6 +1148,7 @@ def _zen_focus_card(props: dict[str, Any]) -> dict[str, Any]:
             "padding_x": props.get("padding_x", 18),
             "justify": props.get("justify", "center"),
             "gap": props.get("gap", 10),
+            "content_bias_px": props.get("content_bias_px"),
             "children": children,
         }
     )
@@ -2034,7 +2156,7 @@ PRESET_REGISTRY: dict[str, PresetSpec] = {
     ),
     "daily_card": PresetSpec(
         builder=_daily_card,
-        props=("variant", "padding_x", "justify", "gap", "row_gap", "min_height", "panel_width", "panel_padding_x", "panel_gap", "year_field", "year_font_size", "day_field", "day_font_size", "day_align", "day_align_y", "month_field", "month_font_size", "weekday_field", "weekday_font_size", "progress_field", "progress_max_field", "progress_width", "season_field", "season_font", "season_font_name", "season_font_size", "season_align_y", "season_max_lines", "season_inset_x", "content_padding_x", "content_justify", "quote_field", "quote_font", "quote_font_name", "quote_font_size", "quote_align_y", "quote_max_lines", "author_template", "author_font", "author_font_name", "author_font_size", "author_align_y", "author_max_lines", "quote_gap", "book_title_field", "book_title_font", "book_title_font_name", "book_title_font_size", "book_title_align_y", "book_title_max_lines", "book_author_template", "book_author_font", "book_author_font_name", "book_author_font_size", "book_author_align_y", "book_author_max_lines", "book_desc_field", "book_desc_font", "book_desc_font_name", "book_desc_font_size", "book_desc_align_y", "book_desc_max_lines", "book_gap", "divider_margin_x", "tip_field", "tip_font", "tip_font_name", "tip_font_size", "tip_max_lines", "meta_template", "meta_font_size", "meta_align", "separator_width"),
+        props=("variant", "padding_x", "justify", "gap", "row_gap", "min_height", "panel_width", "panel_padding_x", "panel_gap", "year_field", "year_font_size", "year_font", "year_font_name", "year_align", "year_template", "year_suffix", "day_field", "day_font_size", "day_align", "day_align_y", "month_field", "month_font", "month_font_name", "month_font_size", "month_align", "weekday_field", "weekday_font", "weekday_font_name", "weekday_font_size", "weekday_align", "between_month_weekday_gap", "col_gap", "left_col_width", "left_gap", "left_justify", "narrow_outer_gap", "narrow_outer_justify", "right_gap", "right_justify", "progress_field", "progress_max_field", "progress_width", "season_field", "season_font", "season_font_name", "season_font_size", "season_align_y", "season_max_lines", "season_inset_x", "content_padding_x", "content_justify", "quote_field", "quote_font", "quote_font_name", "quote_font_size", "quote_align_y", "quote_max_lines", "author_template", "author_font", "author_font_name", "author_font_size", "author_align_y", "author_max_lines", "quote_gap", "book_title_field", "book_title_font", "book_title_font_name", "book_title_font_size", "book_title_align_y", "book_title_max_lines", "book_author_template", "book_author_font", "book_author_font_name", "book_author_font_size", "book_author_align_y", "book_author_max_lines", "book_desc_field", "book_desc_font", "book_desc_font_name", "book_desc_font_size", "book_desc_align_y", "book_desc_max_lines", "book_gap", "divider_margin_x", "tip_field", "tip_font", "tip_font_name", "tip_font_size", "tip_max_lines", "tip_align", "meta_template", "meta_font_size", "meta_align", "separator_width"),
         defaults={"variant": "full"},
     ),
     "quote_focus_card": PresetSpec(
@@ -2054,7 +2176,7 @@ PRESET_REGISTRY: dict[str, PresetSpec] = {
     ),
     "zen_focus_card": PresetSpec(
         builder=_zen_focus_card,
-        props=("padding_x", "justify", "gap", "word_inset_x", "word_field", "word_font", "word_font_name", "word_font_size", "word_align_y", "source_field", "source_font", "source_font_name", "source_font_size", "source_align_y"),
+        props=("padding_x", "justify", "gap", "content_bias_px", "word_inset_x", "word_field", "word_font", "word_font_name", "word_font_size", "word_align_y", "source_field", "source_font", "source_font_name", "source_font_size", "source_align_y"),
         defaults={"word_field": "word", "word_font": "noto_serif_bold", "word_font_size": 48, "word_align_y": "center", "word_inset_x": 20, "source_field": "source", "source_font": "noto_serif_light", "source_font_size": 14, "source_align_y": "bottom", "padding_x": 18, "justify": "center", "gap": 8},
     ),
     "prompt_card": PresetSpec(

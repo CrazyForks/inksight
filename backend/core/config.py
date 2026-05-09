@@ -298,6 +298,15 @@ from pathlib import Path as _Path
 from dotenv import load_dotenv as _load_dotenv
 _load_dotenv(_Path(__file__).resolve().parent.parent / ".env")
 
+# 解决 Windows 本地开发环境 SSL 证书验证失败问题
+# dotenv 默认不覆盖系统已有环境变量，这里强制设置为 certifi 最新证书包
+try:
+    import certifi as _certifi
+    _os.environ["SSL_CERT_FILE"] = _certifi.where()
+    _os.environ["REQUESTS_CA_BUNDLE"] = _certifi.where()
+except ImportError:
+    pass
+
 QWEATHER_API_KEY = _os.getenv("QWEATHER_API_KEY", "")
 QWEATHER_API_HOST = _os.getenv("QWEATHER_API_HOST", "devapi.qweather.com")
 QWEATHER_PRIVATE_KEY = _os.getenv("QWEATHER_PRIVATE_KEY", "").replace("\\n", "\n")

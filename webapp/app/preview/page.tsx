@@ -12,6 +12,7 @@ import { localeFromPathname, t, withLocalePath } from "@/lib/i18n";
 import { cleanLocationValue, type LocationValue } from "@/lib/locations";
 import { authHeaders, fetchCurrentUser } from "@/lib/auth";
 import { ColorSelect } from "@/components/ui/color-select";
+import { ScreenSizeSelect } from "@/components/ui/screen-size-select";
 import { CalendarReminders } from "@/components/config/calendar-reminders";
 import { TimetableEditor, type TimetableData } from "@/components/config/timetable-editor";
 
@@ -113,6 +114,8 @@ export default function ExperiencePage() {
   // do not preselect any mode
   const [previewMode, setPreviewMode] = useState("");
   const [previewColors, setPreviewColors] = useState(2);
+  const [previewWidth, setPreviewWidth] = useState(400);
+  const [previewHeight, setPreviewHeight] = useState(300);
   const [previewModeNameOverride, setPreviewModeNameOverride] = useState<string | null>(null);
 
   const [city] = useState("杭州");
@@ -318,7 +321,9 @@ export default function ExperiencePage() {
       params.set("persona", targetMode);
       params.set("ui_language", locale === "en" ? "en" : "zh");
       if (previewColors > 2) params.set("colors", String(previewColors));
-      
+      params.set("w", String(previewWidth));
+      params.set("h", String(previewHeight));
+
       // 处理城市覆盖：优先使用 override 中的 city，否则使用全局 city
       const cityOverride = override?.city ? String(override.city) : city.trim();
       if (cityOverride) {
@@ -509,7 +514,7 @@ export default function ExperiencePage() {
       const res = await fetch("/api/modes/custom/preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode_def: def, colors: previewColors }),
+        body: JSON.stringify({ mode_def: def, colors: previewColors, w: previewWidth, h: previewHeight }),
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -675,6 +680,7 @@ export default function ExperiencePage() {
                 <div className="flex items-center gap-3">
                   <CardTitle>{t(locale, "preview.panel.modes", "Modes")}</CardTitle>
                   <ColorSelect value={previewColors} onChange={setPreviewColors} tr={(zh, en) => locale === "zh" ? zh : en} />
+                  <ScreenSizeSelect width={previewWidth} height={previewHeight} onChange={(w, h) => { setPreviewWidth(w); setPreviewHeight(h); }} tr={(zh, en) => locale === "zh" ? zh : en} />
                 </div>
                 <button
                   onClick={() => {
@@ -756,7 +762,10 @@ export default function ExperiencePage() {
                   </div>
                 ) : previewImageUrl ? (
                   <div className="flex flex-col items-center gap-2 w-full">
-                    <div className="relative w-full max-w-md aspect-[4/3] bg-white border border-ink/20 rounded-sm overflow-hidden">
+                    <div
+                      className="relative w-full max-w-md bg-white border border-ink/20 rounded-sm overflow-hidden"
+                      style={{ aspectRatio: `${previewWidth}/${previewHeight}` }}
+                    >
                       <Image
                         src={previewImageUrl}
                         alt={t(locale, "preview.display.alt", "InkSight preview")}
