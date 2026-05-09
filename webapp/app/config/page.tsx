@@ -802,7 +802,7 @@ function ConfigPageInner() {
   const [quoteDraft, setQuoteDraft] = useState("");
   const [authorDraft, setAuthorDraft] = useState("");
   const [weatherDraftLocation, setWeatherDraftLocation] = useState<LocationValue>({});
-  const [memoDraft, setMemoDraft] = useState("");
+  const [memoDraft, setMemoDraft] = useState<{ title1: string; text1: string; title2: string; text2: string; title3: string; text3: string }>({ title1: "", text1: "", title2: "", text2: "", title3: "", text3: "" });
   const [countdownName, setCountdownName] = useState(isEn ? "New Year" : "元旦");
   const [countdownDate, setCountdownDate] = useState("2027-01-01");
   const [habitItems, setHabitItems] = useState(
@@ -1195,8 +1195,15 @@ function ConfigPageInner() {
       return;
     }
     if (m === "MEMO") {
-      const existing = (modeOverrides[m]?.memo_text as string) || memoText || "";
-      setMemoDraft(existing);
+      const ms = (modeOverrides[m]?.mode_settings || {}) as Record<string, string>;
+      setMemoDraft({
+        title1: ms.memo_title_1 || "",
+        text1: ms.memo_text_1 || "",
+        title2: ms.memo_title_2 || "",
+        text2: ms.memo_text_2 || "",
+        title3: ms.memo_title_3 || "",
+        text3: ms.memo_text_3 || "",
+      });
       setParamModal({ type: "memo", mode: m, action });
       return;
     }
@@ -1496,6 +1503,13 @@ function ConfigPageInner() {
       ).trim();
       if (memoCandidate) {
         params.set("memo_text", memoCandidate);
+      }
+      // 传递 3 组标题+内容字段
+      const ms = (forcedModeOverride?.mode_settings || activeModeOverride.mode_settings || {}) as Record<string, string>;
+      for (const k of Object.keys(ms)) {
+        if ((k.startsWith("memo_title_") || k.startsWith("memo_text_")) && ms[k]) {
+          params.set(k, ms[k]);
+        }
       }
     }
     if (locationChanged && effectiveLocation.city) params.set("city_override", effectiveLocation.city);
@@ -2129,8 +2143,20 @@ function ConfigPageInner() {
       clearModeOverride(modeId);
     } else if (forcedOverride && Object.keys(forcedOverride).length > 0) {
       updateModeOverride(modeId, forcedOverride);
-      if (modeId === "MEMO" && typeof forcedOverride.memo_text === "string") {
-        setMemoText(forcedOverride.memo_text);
+      if (modeId === "MEMO" && forcedOverride) {
+        const ms = (forcedOverride.mode_settings || {}) as Record<string, string>;
+        if (!ms.memo_title_1 && !ms.memo_text_1) {
+          // 新格式字段直接在 override 顶层
+          const newMs: Record<string, string> = {};
+          for (const k of Object.keys(forcedOverride)) {
+            if (k.startsWith("memo_title_") || k.startsWith("memo_text_")) {
+              newMs[k] = String(forcedOverride[k]);
+            }
+          }
+          if (Object.keys(newMs).length > 0) {
+            forcedOverride.mode_settings = newMs;
+          }
+        }
       }
       if (modeId === "WEATHER" && typeof forcedOverride.city === "string") {
         // keep global city as-is; weather override is per-mode
@@ -3689,24 +3715,51 @@ function ConfigPageInner() {
                 </>
               ) : paramModal.type === "memo" ? (
                 <>
-                  <div className="text-xs text-ink-light">
-                    {tr("输入便签内容，将在墨水屏上显示。", "Enter memo content to display on e-ink screen.")}
+                  <div className="text-xs text-ink-light mb-2">
+                    {tr("设置便签标题和内容（最多3组，空的组不会显示）", "Set memo titles and content (up to 3 groups, empty groups are hidden)")}
                   </div>
-                  <textarea
-                    value={memoDraft}
-                    onChange={(e) => setMemoDraft(e.target.value)}
-                    placeholder={tr("输入便签内容...", "Enter memo content...")}
-                    className="w-full rounded-sm border border-ink/20 px-3 py-2 text-sm min-h-32 bg-white"
-                    autoFocus
-                  />
+                  {([1, 2, 3] as const).map((i) => {
+                    const tKey = `title${i}` as keyof typeof memoDraft;
+                    const cKey = `text${i}` as keyof typeof memoDraft;
+                    return (
+                      <div key={i} className="space-y-1">
+                        <label className="text-xs font-medium text-ink-light">
+                          {tr(`标题 ${i}`, `Title ${i}`)}
+                          {i > 1 && <span className="text-ink-light/50 ml-1">({tr("可选", "optional")})</span>}
+                        </label>
+                        <input
+                          type="text"
+                          value={memoDraft[tKey]}
+                          onChange={(e) => setMemoDraft(prev => ({ ...prev, [tKey]: e.target.value }))}
+                          placeholder={i === 1
+                            ? tr("输入标题，如：今日待办", "e.g. Today's TODO")
+                            : tr("可选标题", "Optional title")}
+                          className="w-full rounded-sm border border-ink/20 px-3 py-1.5 text-sm bg-white"
+                          autoFocus={i === 1}
+                        />
+                        <textarea
+                          value={memoDraft[cKey]}
+                          onChange={(e) => setMemoDraft(prev => ({ ...prev, [cKey]: e.target.value }))}
+                          placeholder={tr("输入便签内容...", "Enter memo content...")}
+                          className="w-full rounded-sm border border-ink/20 px-3 py-2 text-sm min-h-16 bg-white"
+                        />
+                      </div>
+                    );
+                  })}
                   <div className="flex justify-end pt-2">
                     <Button
                       onClick={() => {
-                        const m = memoDraft.trim();
+                        const settings: ModeOverride = {};
+                        for (const i of [1, 2, 3]) {
+                          const tKey = `title${i}` as keyof typeof memoDraft;
+                          const cKey = `text${i}` as keyof typeof memoDraft;
+                          settings[`memo_title_${i}`] = memoDraft[tKey].trim();
+                          settings[`memo_text_${i}`] = memoDraft[cKey].trim();
+                        }
                         commitModalAction(
                           paramModal.mode,
                           paramModal.action,
-                          m ? ({ memo_text: m } as ModeOverride) : undefined,
+                          settings,
                         );
                       }}
                       disabled={previewLoading}

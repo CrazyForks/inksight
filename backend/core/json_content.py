@@ -1051,14 +1051,28 @@ async def _generate_computed_content(mode_def: dict, content_cfg: dict, fallback
         config = kwargs.get("config") or {}
         lang = kwargs.get("language", "zh")
         mode_settings = config.get("mode_settings", {}) if isinstance(config.get("mode_settings", {}), dict) else {}
-        memo_text = mode_settings.get("memo_text", "") if isinstance(mode_settings.get("memo_text", ""), str) else ""
-        if not memo_text:
-            memo_text = config.get("memo_text", "")
-        memo_text = memo_text if isinstance(memo_text, str) else ""
-        if not memo_text:
-            default_hint = "Set your memo in the config page." if lang == "en" else "在配置页面设置你的便签内容"
-            memo_text = fallback.get("memo_text", default_hint)
-        return {"memo_text": memo_text}
+        items: list[dict[str, str]] = []
+        for i in range(1, 4):
+            tk = f"memo_title_{i}"
+            tv = mode_settings.get(tk, "") if isinstance(mode_settings.get(tk, ""), str) else ""
+            if not tv:
+                tv = config.get(tk, "")
+            tv = tv if isinstance(tv, str) else ""
+            ck = f"memo_text_{i}"
+            cv = mode_settings.get(ck, "") if isinstance(mode_settings.get(ck, ""), str) else ""
+            if not cv:
+                cv = config.get(ck, "")
+            cv = cv if isinstance(cv, str) else ""
+            if tv or cv:
+                items.append({"title": tv, "text": cv})
+        if not items:
+            fb_items = fallback.get("memo_items")
+            if isinstance(fb_items, list):
+                items = fb_items
+            else:
+                default_title = "TODO" if lang == "en" else "今日待办"
+                items = [{"title": default_title, "text": "1. \n2. \n3. "}]
+        return {"memo_items": items}
 
     if provider == "habit":
         config = kwargs.get("config") or {}
@@ -1086,18 +1100,57 @@ async def _generate_computed_content(mode_def: dict, content_cfg: dict, fallback
 
         completed = sum(1 for h in habits if h.get("done"))
         total = len(habits) if habits else 0
+
+        _HABIT_MOTTOS_ZH = [
+            "业精于勤荒于嬉",
+            "千里之行始于足下",
+            "贵在坚持",
+            "每天进步一点点",
+            "自律即自由",
+            "好习惯成就好人生",
+            "日拱一卒，功不唐捐",
+            "积跬步以至千里",
+            "今日事今日毕",
+            "坚持就是胜利",
+        ]
+        _HABIT_MOTTOS_EN = [
+            "Consistency is key",
+            "Small steps, big results",
+            "Discipline equals freedom",
+            "Progress, not perfection",
+            "One day at a time",
+            "Good habits shape great lives",
+            "Keep going, you're doing great",
+            "Every effort counts",
+            "Stay the course",
+            "Success is built daily",
+        ]
+        import random
+        motto = random.choice(_HABIT_MOTTOS_EN if lang == "en" else _HABIT_MOTTOS_ZH)
+
         if habits:
-            lines = [f"{h['name']} {h['status']}" for h in habits]
+            habit_lines = [f"{h['status']}  {h['name']}" for h in habits]
+            habit_list = "\n".join(habit_lines)
             if lang == "en":
-                lines.append(f"\nCompleted {completed}/{total} today")
+                habit_footer = f"Completed {completed}/{total} today · {motto}"
             else:
-                lines.append(f"\n今日已完成 {completed}/{total} 项")
-            summary = "\n".join(lines)
+                habit_footer = f"今日已完成 {completed}/{total} 项 · {motto}"
         else:
-            summary = fallback.get("summary", "")
+            habit_list = fallback.get("summary", "")
+            habit_footer = motto
+        # 保留 summary 兼容旧布局
+        summary_lines = [f"{h['name']} {h['status']}" for h in habits] if habits else []
+        if habits:
+            if lang == "en":
+                summary_lines.append(f"\nCompleted {completed}/{total} today")
+            else:
+                summary_lines.append(f"\n今日已完成 {completed}/{total} 项")
+        summary = "\n".join(summary_lines) if summary_lines else fallback.get("summary", "")
         return {
             "habits": habits,
             "summary": summary,
+            "habit_list": habit_list,
+            "habit_footer": habit_footer,
             "week_progress": completed,
             "week_total": total,
         }
@@ -1646,7 +1699,7 @@ def _parse_json_output(text: str, content_cfg: dict, fallback: dict) -> dict:
             return {f: data.get(f, fallback.get(f, "")) for f in fields}
         return data
     except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"[JSONContent] JSON parse failed: {e}")
+        logger.error("[JSONContent] JSON parse failed: %s | raw[:200]: %s", e, text[:200])
         return dict(fallback)
 
 
@@ -1657,6 +1710,7 @@ def _parse_llm_json_output(text: str, content_cfg: dict, fallback: dict) -> dict
         cleaned = _clean_json_response(text)
         data = json.loads(cleaned)
         if not isinstance(data, dict):
+            logger.warning("[JSONContent] LLM returned non-dict JSON, falling back. Raw: %s", text[:200])
             return dict(fallback)
 
         result = {}
@@ -1668,5 +1722,5 @@ def _parse_llm_json_output(text: str, content_cfg: dict, fallback: dict) -> dict
             result[field_name] = data.get(field_name, default)
         return result
     except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"[JSONContent] JSON parse failed: {e}")
+        logger.error("[JSONContent] LLM JSON parse failed: %s | raw[:200]: %s", e, text[:200])
         return dict(fallback)

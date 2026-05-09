@@ -121,10 +121,23 @@ def _clean_json_response(text: str) -> str:
         if first_newline != -1:
             cleaned = cleaned[first_newline + 1:]
         cleaned = cleaned.rsplit("```", 1)[0]
+    # Replace common non-standard quotes with standard double quotes
+    cleaned = cleaned.replace("\u201c", '"').replace("\u201d", '"')  # ""
+    cleaned = cleaned.replace("\u2018", "'").replace("\u2019", "'")  # ''
+    cleaned = cleaned.replace("\uff02", '"')  # ＂ fullwidth quotation mark
     # Try to extract a JSON object if surrounded by other text
     match = re.search(r'\{[\s\S]*\}', cleaned)
     if match:
         cleaned = match.group(0)
+    # Remove control characters that break JSON parsing (except \n \r \t)
+    cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', cleaned)
+    # Fix doubled braces from LLM echoing template syntax
+    while '{{' in cleaned or '}}' in cleaned:
+        cleaned = cleaned.replace('{{', '{').replace('}}', '}')
+    # Fix single-quoted JSON keys/values: replace ' with " when used as JSON delimiters
+    # Only if it looks like single-quoted JSON (starts with {')
+    if cleaned.startswith("{'") or cleaned.startswith("{ '"):
+        cleaned = re.sub(r"(?<=\{)\s*'|(?<=,)\s*'|'(?=\s*:)|(?<=:\s)'|'(?=\s*[,}])", '"', cleaned)
     return cleaned.strip()
 
 
