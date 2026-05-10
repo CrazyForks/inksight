@@ -1655,6 +1655,14 @@ def _apply_post_process(result: dict, content_cfg: dict) -> dict:
             result[field_name] = val[:1] if val else ""
         elif rule == "strip_quotes":
             result[field_name] = val.strip('""\u201c\u201d\u300c\u300d')
+        elif rule == "recipe_normalize_item_sep":
+            s = val.strip()
+            parts = [
+                p.strip()
+                for p in re.split(r"\s*[,，、]\s*|\s*[·・]\s*", s)
+                if p and p.strip()
+            ]
+            result[field_name] = " · ".join(parts) if parts else s
     return result
 
 

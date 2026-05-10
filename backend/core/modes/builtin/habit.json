@@ -39,9 +39,19 @@
         "padding_y": 4,
         "list_font_size": 12,
         "list_max_lines": 4,
-        "footer_font_size": 10
+        "footer_font_size": 10,
+        "footer_ink_offset_y": -10
       },
       "footer": {"label": "打卡", "height": 18}
+    },
+    "648x480": {
+      "preset_props": {
+        "padding_x": 28,
+        "padding_y": 12,
+        "list_font_size": 17,
+        "list_max_lines": 10,
+        "footer_font_size": 13
+      }
     },
     "800x480": {
       "preset_props": {

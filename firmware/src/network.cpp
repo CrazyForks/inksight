@@ -11,6 +11,9 @@
 #include <LittleFS.h>
 #include <mbedtls/base64.h>
 #include <time.h>
+#if defined(BOARD_PROFILE_ESP32_C3_WROOM02)
+#include <esp_adc_cal.h>
+#endif
 
 // ── Time state ──────────────────────────────────────────────
 int curHour, curMin, curSec;
@@ -152,7 +155,33 @@ float readBatteryVoltage() {
         sum += readings[i];
 
     float avgRaw = (float)sum / (SAMPLES - 2 * DISCARD);
+#if defined(BOARD_PROFILE_ESP32_C3_WROOM02)
+    static esp_adc_cal_characteristics_t adcChars;
+    static bool calibrated = false;
+    if (!calibrated) {
+        esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adcChars);
+        calibrated = true;
+    }
+
+    uint32_t mv = esp_adc_cal_raw_to_voltage((uint32_t)avgRaw, &adcChars);
+    float realBatteryVoltage = (mv / 1000.0f) * 2.0f; // R1=10k, R2=10k
+
+    const float measuredLow  = 2.95f;
+    const float measuredHigh = 4.17f;
+    const float targetLow    = 0.0f;
+    const float targetHigh   = 3.3f;
+
+    if (realBatteryVoltage <= measuredLow) return targetLow;
+    if (realBatteryVoltage >= measuredHigh) return targetHigh;
+
+    float mappedVoltage = targetLow + (realBatteryVoltage - measuredLow) *
+                          (targetHigh - targetLow) / (measuredHigh - measuredLow);
+    if (mappedVoltage > targetHigh) mappedVoltage = targetHigh;
+    if (mappedVoltage < targetLow) mappedVoltage = targetLow;
+    return mappedVoltage;
+#else
     return avgRaw * (3.3f / 4095.0f) * 2.0f;
+#endif
 }
 
 // ── Stream helper ───────────────────────────────────────────
@@ -651,21 +680,65 @@ bool fetchBMP(bool nextMode, bool *isFallback, String *renderedModeIdOut) {
                              | ((uint32_t)fileHeader[13] << 24);
         Serial.printf("BMP pixel offset: %u\n", pixelOffset);
 
-        int toSkip = pixelOffset - 14;
+        // Read info header to get bit count (biBitCount at offset 28 = 14+14)
+        uint8_t infoHeader[16];
+        if (!readExact(stream, infoHeader, 16)) {
+            Serial.println("Failed to read BMP info header");
+            http.end();
+            return false;
+        }
+        int bmpBits = infoHeader[14] | ((int)infoHeader[15] << 8);
+        Serial.printf("BMP bit count: %d\n", bmpBits);
+
+        int toSkip = pixelOffset - 14 - 16;  // skip remaining header+palette
         while (toSkip > 0 && stream->connected()) {
             if (stream->available()) { stream->read(); toSkip--; }
         }
 
-        uint8_t rowBuf[ROW_STRIDE];
         memset(imgBuf, 0xFF, IMG_BUF_LEN);
-        for (int bmpY = 0; bmpY < H; bmpY++) {
-            if (!readExact(stream, rowBuf, ROW_STRIDE)) {
-                Serial.printf("Failed to read row %d\n", bmpY);
+
+        if (bmpBits <= 1) {
+            // 1-bit BMP: each row is ROW_STRIDE bytes (padded)
+            uint8_t rowBuf[ROW_STRIDE];
+            for (int bmpY = 0; bmpY < H; bmpY++) {
+                if (!readExact(stream, rowBuf, ROW_STRIDE)) {
+                    Serial.printf("Failed to read row %d\n", bmpY);
+                    http.end();
+                    return false;
+                }
+                int dispY = H - 1 - bmpY;
+                memcpy(imgBuf + dispY * ROW_BYTES, rowBuf, ROW_BYTES);
+            }
+        } else {
+            // 8-bit (or 24-bit) BMP: convert each pixel to 1 bit
+            int srcRowBytes = (W * bmpBits + 31) / 32 * 4;
+            uint8_t *srcRow = (uint8_t *)malloc(srcRowBytes);
+            if (!srcRow) {
+                Serial.println("Failed to alloc srcRow");
                 http.end();
                 return false;
             }
-            int dispY = H - 1 - bmpY;
-            memcpy(imgBuf + dispY * ROW_BYTES, rowBuf, ROW_BYTES);
+            for (int bmpY = 0; bmpY < H; bmpY++) {
+                if (!readExact(stream, srcRow, srcRowBytes)) {
+                    Serial.printf("Failed to read row %d\n", bmpY);
+                    free(srcRow);
+                    http.end();
+                    return false;
+                }
+                int dispY = H - 1 - bmpY;
+                for (int x = 0; x < W; x++) {
+                    uint8_t pixel;
+                    if (bmpBits == 8) {
+                        pixel = srcRow[x];
+                    } else {
+                        pixel = srcRow[x * 3];  // 24-bit: use blue channel
+                    }
+                    if (pixel < 128) {
+                        imgBuf[dispY * ROW_BYTES + x / 8] &= ~(0x80 >> (x % 8));
+                    }
+                }
+            }
+            free(srcRow);
         }
 
         http.end();

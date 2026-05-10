@@ -14,6 +14,17 @@
 #define PIN_CFG_BTN    9
 #define PIN_LED        3
 #define PIN_AI_CHAT_SW -1
+#elif defined(BOARD_PROFILE_ESP32_C3_WROOM02)
+#define PIN_EPD_MOSI   6
+#define PIN_EPD_SCK    4
+#define PIN_EPD_CS     7
+#define PIN_EPD_DC     1
+#define PIN_EPD_RST    2
+#define PIN_EPD_BUSY   10
+#define PIN_BAT_ADC    0
+#define PIN_CFG_BTN    9
+#define PIN_LED        5
+#define PIN_AI_CHAT_SW -1
 #elif defined(BOARD_PROFILE_ESP32_WROOM32E)
 #define PIN_EPD_MOSI   14
 #define PIN_EPD_SCK    13
@@ -25,6 +36,19 @@
 #define PIN_CFG_BTN    0
 #define PIN_LED        2
 #define PIN_AI_CHAT_SW 23
+#elif defined(BOARD_PROFILE_SMT_C3)
+#define PIN_EPD_MOSI   6
+#define PIN_EPD_SCK    4
+#define PIN_EPD_CS     7
+#define PIN_EPD_DC     1
+#define PIN_EPD_RST    2
+#define PIN_EPD_BUSY   10
+#define PIN_BAT_ADC    0
+#ifndef PIN_CFG_BTN
+#define PIN_CFG_BTN    9
+#endif
+#define PIN_LED        5
+#define PIN_AI_CHAT_SW -1
 #else
 #error "Unsupported board profile"
 #endif
@@ -49,6 +73,8 @@ static const int H = EPD_HEIGHT;
 static const int ROW_BYTES   = W / 8;
 static const int ROW_STRIDE  = (ROW_BYTES + 3) & ~3;  // BMP row stride (4-byte aligned)
 static const int IMG_BUF_LEN = ROW_BYTES * H;
+/** Preprocessor image buffer size for #if (IMG_BUF_LEN is not a cpp constant). */
+#define INKSIGHT_IMG_BUF_BYTES_MACRO ((EPD_WIDTH / 8) * (EPD_HEIGHT))
 
 #ifndef EPD_BPP
 #define EPD_BPP 1

@@ -703,6 +703,23 @@ def test_render_forecast_cards_supports_custom_fields():
     assert min(img.crop((40, 34, SCREEN_W - 40, 120)).getdata()) < 255
 
 
+def test_slice_calendar_rows_around_day():
+    from core.json_renderer import slice_calendar_rows_around_day
+
+    rows = [
+        ["", "", "", "", "1", "2", "3"],
+        ["4", "5", "6", "7", "8", "9", "10"],
+        ["11", "12", "13", "14", "15", "16", "17"],
+        ["28", "29", "30", "31", "", "", ""],
+    ]
+    assert slice_calendar_rows_around_day(rows, "1", max_rows=2) == [rows[0], rows[1]]
+    assert slice_calendar_rows_around_day(rows, "9", max_rows=2) == [rows[1], rows[2]]
+    assert slice_calendar_rows_around_day(rows, "31", max_rows=2) == [rows[2], rows[3]]
+    # Cell "19" must not satisfy today "9" (exact match per cell)
+    tail = [["18", "19", "20", "21", "22", "23", "24"]]
+    assert slice_calendar_rows_around_day(tail + rows, "9", max_rows=2) == [rows[0], rows[1]]
+
+
 def test_render_calendar_grid_supports_custom_fields():
     mode_def = _make_mode_def([
         {

@@ -84,14 +84,41 @@
   "layout_overrides": {
     "296x128": {
       "preset_props": {
-        "padding_x": 12,
+        "padding_x": 56,
         "padding_y": 4,
         "text_font_size": 13,
         "text_max_lines": 3,
         "text_inset_x": 0
       },
-      "decorations": [],
+      "decorations": [
+        {
+          "icon": "memo_img",
+          "anchor": "top_left",
+          "size": 48,
+          "margin": 6,
+          "image_mode": "invert_dither"
+        }
+      ],
       "footer": {"label": "MEMO", "height": 18}
+    },
+    "648x480": {
+      "preset_props": {
+        "padding_x": 54,
+        "padding_y": 16,
+        "title_font_size": 20,
+        "text_font_size": 18,
+        "text_max_lines": 8,
+        "text_inset_x": 0
+      },
+      "decorations": [
+        {
+          "icon": "memo_img",
+          "anchor": "top_left",
+          "size": 60,
+          "margin": 12,
+          "image_mode": "invert_dither"
+        }
+      ]
     },
     "800x480": {
       "preset_props": {

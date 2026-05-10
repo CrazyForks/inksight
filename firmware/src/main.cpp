@@ -553,6 +553,10 @@ static void runVoiceLoop(AudioService &audioService) {
 void setup() {
     Serial.begin(115200);
     delay(3000);
+#if defined(BOARD_PROFILE_ESP32_C3_WROOM02)
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);
+#endif
     Serial.println("\n=== InkSight Voice ===");
 
     ledInit();
@@ -660,6 +664,10 @@ static bool decodeVoiceBmpToFrameBuffer(const uint8_t *bmpBytes, size_t bmpLen);
 void setup() {
     Serial.begin(115200);
     delay(3000);
+#if defined(BOARD_PROFILE_ESP32_C3_WROOM02)
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);
+#endif
     Serial.println("\n=== InkSight ===");
 
     gpioInit();
@@ -984,10 +992,22 @@ void loop() {
     static unsigned long lastAlertPollAt = 0;
     static bool alertVisible = false;
     static unsigned long alertShownAt = 0;
-    static uint8_t alertBackupBuf[IMG_BUF_LEN];
+#if INKSIGHT_IMG_BUF_BYTES_MACRO > 20000
+    // Second full-frame static buffer overflows classic ESP32 DRAM for 5.83"/7.5" panels.
+    static uint8_t *alertBackupBuf = nullptr;
+    if (!alertBackupBuf) {
+        alertBackupBuf = (uint8_t *)malloc(IMG_BUF_LEN);
+        if (!alertBackupBuf) {
+            Serial.println("[MEM] alertBackupBuf malloc failed; focus alerts disabled");
+        }
+    }
+#else
+    static uint8_t alertBackupBufStatic[IMG_BUF_LEN];
+    uint8_t *const alertBackupBuf = alertBackupBufStatic;
+#endif
     static bool hasAlertBackup = false;
 
-    if (focusListening) {
+    if (focusListening && alertBackupBuf) {
         unsigned long nowMs = millis();
         if (!alertVisible) {
             const unsigned long ALERT_INTERVAL_MS = 10000UL;
