@@ -505,6 +505,43 @@ def wrap_text(text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]
     return lines
 
 
+def wrap_text_fill_sidebar(
+    text: str,
+    font: ImageFont.ImageFont,
+    sidebar_width: int,
+    sidebar_max_height: int,
+    line_height: int,
+) -> tuple[list[str], str]:
+    """Fill a narrow column beside a float up to sidebar_max_height; return (lines, remaining text).
+
+    Used for e-ink \"text wraps around a left block\" layouts. Each line is the first line of
+    ``wrap_text`` on the remaining string; ``line_height`` must match the renderer's line step.
+    """
+    lines_out: list[str] = []
+    if not text or not text.strip():
+        return lines_out, ""
+    if sidebar_width <= 0 or sidebar_max_height <= 0 or line_height <= 0:
+        return lines_out, text.strip()
+    rest = text.strip()
+    guard = 0
+    limit = max(3, len(text) + 2)
+    while rest and guard < limit:
+        guard += 1
+        if len(lines_out) * line_height + line_height > sidebar_max_height:
+            break
+        chunk = wrap_text(rest, font, max(1, sidebar_width))
+        if not chunk or not chunk[0]:
+            break
+        line = chunk[0]
+        lines_out.append(line)
+        trimmed = rest.lstrip()
+        if trimmed.startswith(line):
+            rest = trimmed[len(line) :].lstrip()
+        else:
+            break
+    return lines_out, rest.strip()
+
+
 def render_quote_body(
     draw: ImageDraw.ImageDraw,
     text: str,

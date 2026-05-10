@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -73,6 +74,7 @@ def _text_node(
     ellipsis: bool | None = None,
     line_height: int | None = None,
     grow: int | None = None,
+    ink_offset_y: int | None = None,
 ) -> dict[str, Any]:
     return _compact(
         {
@@ -88,6 +90,7 @@ def _text_node(
             "ellipsis": ellipsis,
             "line_height": line_height,
             "grow": grow,
+            "ink_offset_y": ink_offset_y,
         }
     )
 
@@ -217,12 +220,13 @@ def _fragment_metric_hero(props: dict[str, Any]) -> dict[str, Any]:
             "align_y": props.get("hero_align_y"),
         }
     )
-    children.append(
-        _separator_node(
-            style=props.get("separator_style", "short"),
-            width=props.get("separator_width", 70),
+    if props.get("show_separator", True):
+        children.append(
+            _separator_node(
+                style=props.get("separator_style", "short"),
+                width=props.get("separator_width", 70),
+            )
         )
-    )
     return {
         "type": "column",
         "gap": props.get("gap", 4),
@@ -516,7 +520,7 @@ FRAGMENT_REGISTRY: dict[str, FragmentSpec] = {
     ),
     "metric_hero": FragmentSpec(
         builder=_fragment_metric_hero,
-        props=("meta_field", "meta_font", "meta_font_name", "meta_font_size", "meta_align", "meta_align_y", "meta_max_lines", "hero_field", "hero_font_size", "hero_align", "hero_align_y", "separator_style", "separator_width", "gap"),
+        props=("meta_field", "meta_font", "meta_font_name", "meta_font_size", "meta_align", "meta_align_y", "meta_max_lines", "hero_field", "hero_font_size", "hero_align", "hero_align_y", "separator_style", "separator_width", "gap", "show_separator"),
         required_props=("hero_field",),
         field_props=("meta_field", "hero_field"),
     ),
@@ -611,7 +615,90 @@ def _story_card(props: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _thisday_card_float_wrap(props: dict[str, Any]) -> dict[str, Any]:
+    float_column_w = props.get("float_column_width", 92)
+    header_gap = props.get("header_gap", 4)
+    inner_column_gap = props.get("body_gap", props.get("gap", 4))
+    metric_props = {
+        "meta_field": props.get("meta_field", "years_ago"),
+        "meta_font": props.get("meta_font"),
+        "meta_font_name": props.get("meta_font_name"),
+        "meta_font_size": props.get("meta_font_size", 11),
+        "meta_align": props.get("meta_align", "left"),
+        "hero_field": props.get("hero_field", "year"),
+        "hero_font_size": props.get("hero_font_size", 38),
+        "hero_align": props.get("hero_align", "left"),
+        "separator_style": props.get("separator_style", "short"),
+        "separator_width": props.get("separator_width", 40),
+        "gap": header_gap,
+        "show_separator": props.get("hero_show_separator", True),
+    }
+    float_column_children: list[dict[str, Any]] = [
+        _build_fragment_instance("metric_hero", metric_props),
+    ]
+    if props.get("float_show_event_title", True):
+        float_column_children.append(
+            _text_node(
+                field=str(props.get("title_field", "event_title")),
+                font=props.get("title_font"),
+                font_name=props.get("title_font_name"),
+                font_size=props.get("title_font_size", 16),
+                align=str(props.get("title_align", "left") or "left"),
+                max_lines=props.get("title_max_lines", 2),
+            )
+        )
+    float_box = {
+        "type": "box",
+        "width": float_column_w,
+        "children": [
+            {
+                "type": "column",
+                "gap": inner_column_gap,
+                "children": float_column_children,
+            }
+        ],
+    }
+    float_wrap = _compact(
+        {
+            "type": "float_wrap",
+            "text_field": str(props.get("body_field", "event_desc")),
+            "font": props.get("body_font"),
+            "font_name": props.get("body_font_name"),
+            "font_size": props.get("body_font_size", 13),
+            "gap": props.get("float_wrap_gap", 4),
+            "float_below_gap": props.get("float_below_gap", 2),
+            "wrap_below_max_lines": props.get("wrap_below_max_lines"),
+            "children": [float_box],
+        }
+    )
+    footer = _build_fragment_instance(
+        "footer_note",
+        {
+            "field": props.get("footer_field", "significance"),
+            "font": props.get("footer_font"),
+            "font_name": props.get("footer_font_name"),
+            "font_size": props.get("footer_font_size", 11),
+            "align": "center",
+            "max_lines": props.get("footer_max_lines", 2),
+            "gap": props.get("footer_gap", 6),
+            "divider_inset_x": props.get("divider_inset_x", 40),
+        },
+    )
+    return _compact(
+        {
+            "type": "column",
+            "padding_x": props.get("padding_x", 18),
+            "padding_y": props.get("padding_y", 8),
+            "justify": str(props.get("justify", "space_between") or "space_between"),
+            "gap": props.get("gap", 8),
+            "children": [float_wrap, footer],
+        }
+    )
+
+
 def _thisday_card(props: dict[str, Any]) -> dict[str, Any]:
+    if props.get("float_wrap_body"):
+        return _thisday_card_float_wrap(props)
     return _compact(
         {
             "type": "column",
@@ -693,11 +780,11 @@ def _build_briefing_section(section: dict[str, Any]) -> dict[str, Any]:
 
 
 def _briefing_sections(props: dict[str, Any]) -> dict[str, Any]:
-    sections = [
-        _build_briefing_section(section)
-        for section in props.get("sections", [])
-        if isinstance(section, dict)
-    ]
+    raw_sections = [s for s in props.get("sections", []) if isinstance(s, dict)]
+    pick_n = props.get("random_subset_count")
+    if isinstance(pick_n, int) and pick_n > 0 and len(raw_sections) > pick_n:
+        raw_sections = random.sample(raw_sections, pick_n)
+    sections = [_build_briefing_section(section) for section in raw_sections]
     return _compact(
         {
             "type": "column",
@@ -1076,6 +1163,22 @@ def _memo_card(props: dict[str, Any]) -> dict[str, Any]:
 
 
 def _habit_card(props: dict[str, Any]) -> dict[str, Any]:
+    footer_kw: dict[str, Any] = {
+        "field": str(props.get("footer_field", "habit_footer")),
+        "font": props.get("footer_font"),
+        "font_name": props.get("footer_font_name"),
+        "font_size": props.get("footer_font_size", 14),
+        "align": "left",
+        "align_y": "bottom",
+        "max_lines": 1,
+    }
+    raw_off = props.get("footer_ink_offset_y")
+    if raw_off is not None:
+        try:
+            footer_kw["ink_offset_y"] = int(raw_off)
+        except (TypeError, ValueError):
+            pass
+    footer_text = _text_node(**footer_kw)
     children: list[dict[str, Any]] = [
         _text_node(
             field=str(props.get("list_field", "habit_list")),
@@ -1086,15 +1189,7 @@ def _habit_card(props: dict[str, Any]) -> dict[str, Any]:
             align_y="top",
             max_lines=props.get("list_max_lines", 10),
         ),
-        _text_node(
-            field=str(props.get("footer_field", "habit_footer")),
-            font=props.get("footer_font"),
-            font_name=props.get("footer_font_name"),
-            font_size=props.get("footer_font_size", 14),
-            align="left",
-            align_y="bottom",
-            max_lines=1,
-        ),
+        footer_text,
     ]
     return _compact(
         {
@@ -1299,15 +1394,17 @@ def _word_card(props: dict[str, Any]) -> dict[str, Any]:
                 },
             )
         )
-    return _compact(
-        {
-            "type": "column",
-            "padding_x": props.get("padding_x", 18),
-            "justify": props.get("justify", "center"),
-            "gap": props.get("gap", 8),
-            "children": children,
-        }
-    )
+    column: dict[str, Any] = {
+        "type": "column",
+        "padding_x": props.get("padding_x", 18),
+        "justify": props.get("justify", "center"),
+        "gap": props.get("gap", 8),
+        "children": children,
+    }
+    for opt in ("padding_y", "padding_top", "padding_bottom", "content_bias_px"):
+        if opt in props:
+            column[opt] = props[opt]
+    return _compact(column)
 
 
 def _letter_card(props: dict[str, Any]) -> dict[str, Any]:
@@ -1595,7 +1692,8 @@ def _recipe_card(props: dict[str, Any]) -> dict[str, Any]:
             },
         )
     )
-    children.append(_separator_node(style="short", width=props.get("separator_width", 70)))
+    if props.get("show_season_separator", True):
+        children.append(_separator_node(style="short", width=props.get("separator_width", 70)))
     if variant == "compact":
         delimiter = str(props.get("compact_delimiter", ":"))
         for field_name, label_key in (
@@ -1727,26 +1825,34 @@ def _poetry_card(props: dict[str, Any]) -> dict[str, Any]:
             )
         )
     children.append(_separator_node(style="short", width=props.get("separator_width", 60)))
+    lines_repeat: dict[str, Any] = {
+        "type": "repeat",
+        "field": props.get("lines_field", "lines"),
+        "limit": props.get("lines_limit", 8),
+        "gap": props.get("lines_gap", 8),
+        "item": _text_node(
+            field="_value",
+            font=props.get("lines_font"),
+            font_name=props.get("lines_font_name"),
+            font_size=props.get("lines_font_size", 16),
+            align="center",
+            max_lines=props.get("line_max_lines", 1),
+        ),
+    }
+    pstep = props.get("lines_pair_step")
+    if pstep is not None:
+        try:
+            pi = int(pstep)
+            if pi > 1:
+                lines_repeat["pair_step"] = pi
+                lines_repeat["pair_separator"] = str(props.get("lines_pair_separator", "，"))
+        except (TypeError, ValueError):
+            pass
     children.append(
         {
             "type": "box",
             "padding_x": props.get("lines_inset_x", 30),
-            "children": [
-                {
-                    "type": "repeat",
-                    "field": props.get("lines_field", "lines"),
-                    "limit": props.get("lines_limit", 8),
-                    "gap": props.get("lines_gap", 8),
-                    "item": _text_node(
-                        field="_value",
-                        font=props.get("lines_font"),
-                        font_name=props.get("lines_font_name"),
-                        font_size=props.get("lines_font_size", 16),
-                        align="center",
-                        max_lines=props.get("line_max_lines", 1),
-                    ),
-                }
-            ],
+            "children": [lines_repeat],
         }
     )
     note_field = props.get("note_field")
@@ -1771,6 +1877,7 @@ def _poetry_card(props: dict[str, Any]) -> dict[str, Any]:
             "padding_y": props.get("padding_y"),
             "justify": props.get("justify", "center"),
             "gap": props.get("gap", 8),
+            "content_bias_px": props.get("content_bias_px"),
             "children": children,
         }
     )
@@ -1993,27 +2100,58 @@ def _countdown_card(props: dict[str, Any]) -> dict[str, Any]:
                 width=props.get("divider_width", 70),
             )
         )
-    event_children.append(
-        {
-            "type": "big_number",
-            "field": str(props.get("days_field", "days")),
-            "font": props.get("days_font"),
-            "font_size": props.get("days_font_size", 52),
-            "align": "center",
-        }
-    )
+    days_field = str(props.get("days_field", "days"))
+    days_font_size = props.get("days_font_size", 52)
+    big_number_block: dict[str, Any] = {
+        "type": "big_number",
+        "field": days_field,
+        "font": props.get("days_font"),
+        "font_size": days_font_size,
+        "align": "center",
+    }
     days_label_template = props.get("days_label_template")
-    if days_label_template:
+    inline_unit = props.get("days_inline_unit")
+    if inline_unit and days_label_template:
         event_children.append(
-            _text_node(
-                template=days_label_template,
-                font=props.get("days_label_font"),
-                font_name=props.get("days_label_font_name"),
-                font_size=props.get("days_label_font_size", 13),
-                align="center",
-                max_lines=1,
+            _compact(
+                {
+                    "type": "row",
+                    "gap": props.get("days_inline_gap", 4),
+                    "align": str(props.get("days_inline_row_align", "center") or "center"),
+                    "children": [
+                        {
+                            "type": "big_number",
+                            "field": days_field,
+                            "font": props.get("days_font"),
+                            "font_size": days_font_size,
+                            "align": str(props.get("days_inline_number_align", "right") or "right"),
+                        },
+                        _text_node(
+                            template=str(days_label_template),
+                            font=props.get("days_label_font"),
+                            font_name=props.get("days_label_font_name"),
+                            font_size=props.get("days_label_font_size", 13),
+                            align=str(props.get("days_inline_label_align", "left") or "left"),
+                            align_y="center",
+                            max_lines=props.get("days_label_max_lines", 2),
+                        ),
+                    ],
+                }
             )
         )
+    else:
+        event_children.append(big_number_block)
+        if days_label_template:
+            event_children.append(
+                _text_node(
+                    template=days_label_template,
+                    font=props.get("days_label_font"),
+                    font_name=props.get("days_label_font_name"),
+                    font_size=props.get("days_label_font_size", 13),
+                    align="center",
+                    max_lines=1,
+                )
+            )
     children: list[dict[str, Any]] = []
     if props.get("top_gap"):
         children.append({"type": "spacer", "height": props.get("top_gap")})
@@ -2077,14 +2215,15 @@ def _fitness_card(props: dict[str, Any]) -> dict[str, Any]:
             max_lines=1,
         )
     )
-    children.append(
-        _separator_node(
-            style=props.get("header_divider_style", "solid"),
-            margin_x=props.get("header_divider_margin_x", 24),
-            width=props.get("header_divider_width"),
+    if props.get("show_header_divider", True):
+        children.append(
+            _separator_node(
+                style=props.get("header_divider_style", "solid"),
+                margin_x=props.get("header_divider_margin_x", 24),
+                width=props.get("header_divider_width"),
+            )
         )
-    )
-    children.append(
+    exercise_section = _compact(
         {
             "type": "section_box",
             "title": str(props.get("exercise_title", "Exercises")),
@@ -2093,9 +2232,11 @@ def _fitness_card(props: dict[str, Any]) -> dict[str, Any]:
             "title_font_size": props.get("section_title_font_size", 14),
             "content_indent": props.get("section_content_indent", 36),
             "gap": props.get("section_gap", 4),
+            "content_ink_offset_y": props.get("exercise_content_ink_offset_y"),
             "children": [_fitness_rows(props)],
         }
     )
+    children.append(exercise_section)
     if props.get("tip_field"):
         if props.get("show_tip_divider", True):
             children.append(
@@ -2146,12 +2287,12 @@ PRESET_REGISTRY: dict[str, PresetSpec] = {
     ),
     "thisday_card": PresetSpec(
         builder=_thisday_card,
-        props=("padding_x", "padding_y", "justify", "gap", "meta_field", "meta_font_size", "hero_field", "hero_font_size", "separator_width", "title_field", "title_font", "title_font_name", "title_font_size", "title_max_lines", "body_field", "body_font", "body_font_name", "body_font_size", "body_inset_x", "body_max_lines", "body_gap", "divider_inset_x", "footer_field", "footer_font", "footer_font_name", "footer_font_size", "footer_max_lines", "footer_gap"),
+        props=("padding_x", "padding_y", "justify", "gap", "float_wrap_body", "float_column_width", "float_wrap_gap", "float_below_gap", "wrap_below_max_lines", "hero_show_separator", "float_show_event_title", "meta_field", "meta_font_size", "meta_align", "hero_field", "hero_font_size", "hero_align", "separator_style", "separator_width", "title_field", "title_font", "title_font_name", "title_font_size", "title_max_lines", "title_align", "body_field", "body_font", "body_font_name", "body_font_size", "body_inset_x", "body_max_lines", "body_gap", "divider_inset_x", "footer_field", "footer_font", "footer_font_name", "footer_font_size", "footer_max_lines", "footer_gap", "header_gap"),
         required_props=("hero_field", "title_field", "body_field"),
     ),
     "briefing_sections": PresetSpec(
         builder=_briefing_sections,
-        props=("padding_x", "padding_y", "gap", "justify", "sections"),
+        props=("padding_x", "padding_y", "gap", "justify", "sections", "random_subset_count"),
         required_props=("sections",),
     ),
     "daily_card": PresetSpec(
@@ -2171,7 +2312,7 @@ PRESET_REGISTRY: dict[str, PresetSpec] = {
     ),
     "habit_card": PresetSpec(
         builder=_habit_card,
-        props=("padding_x", "padding_y", "justify", "gap", "list_field", "list_font", "list_font_name", "list_font_size", "list_max_lines", "footer_field", "footer_font", "footer_font_name", "footer_font_size"),
+        props=("padding_x", "padding_y", "justify", "gap", "list_field", "list_font", "list_font_name", "list_font_size", "list_max_lines", "footer_field", "footer_font", "footer_font_name", "footer_font_size", "footer_ink_offset_y"),
         defaults={"list_field": "habit_list", "list_font": "noto_serif_light", "list_font_size": 16, "list_max_lines": 10, "footer_field": "habit_footer", "footer_font": "noto_serif_light", "footer_font_size": 14, "padding_x": 24, "padding_y": 8, "justify": "space_between", "gap": 6},
     ),
     "zen_focus_card": PresetSpec(
@@ -2208,12 +2349,12 @@ PRESET_REGISTRY: dict[str, PresetSpec] = {
     ),
     "recipe_card": PresetSpec(
         builder=_recipe_card,
-        props=("variant", "padding_x", "padding_y", "justify", "gap", "season_field", "season_font", "season_font_name", "season_font_size", "separator_width", "section_font_size", "meal_font", "meal_font_name", "meal_font_size", "meal_max_lines", "meal_inset_x", "breakfast_title", "lunch_title", "dinner_title", "tip_field", "tip_font", "tip_font_name", "tip_font_size", "tip_max_lines", "show_tip_divider", "tip_divider_style", "tip_divider_margin_x", "compact_delimiter", "compact_font", "compact_font_name", "compact_font_size", "compact_align", "compact_max_lines", "compact_tip_field", "compact_tip_font", "compact_tip_font_name", "compact_tip_font_size", "compact_tip_align", "compact_tip_max_lines", "breakfast_label", "lunch_label", "dinner_label"),
+        props=("variant", "padding_x", "padding_y", "justify", "gap", "season_field", "season_font", "season_font_name", "season_font_size", "show_season_separator", "separator_width", "section_font_size", "meal_font", "meal_font_name", "meal_font_size", "meal_max_lines", "meal_inset_x", "breakfast_title", "lunch_title", "dinner_title", "tip_field", "tip_font", "tip_font_name", "tip_font_size", "tip_max_lines", "show_tip_divider", "tip_divider_style", "tip_divider_margin_x", "compact_delimiter", "compact_font", "compact_font_name", "compact_font_size", "compact_align", "compact_max_lines", "compact_tip_field", "compact_tip_font", "compact_tip_font_name", "compact_tip_font_size", "compact_tip_align", "compact_tip_max_lines", "breakfast_label", "lunch_label", "dinner_label"),
         defaults={"variant": "full", "season_field": "season", "breakfast_title": "Breakfast", "lunch_title": "Lunch", "dinner_title": "Dinner", "tip_field": "tip", "breakfast_label": "Breakfast", "lunch_label": "Lunch", "dinner_label": "Dinner"},
     ),
     "poetry_card": PresetSpec(
         builder=_poetry_card,
-        props=("padding_x", "padding_y", "justify", "gap", "top_gap", "title_field", "title_font", "title_font_name", "title_font_size", "title_max_lines", "author_field", "author_font", "author_font_name", "author_font_size", "author_max_lines", "separator_width", "lines_inset_x", "lines_field", "lines_limit", "lines_gap", "lines_font", "lines_font_name", "lines_font_size", "line_max_lines", "note_field", "note_font", "note_font_name", "note_font_size", "note_max_lines"),
+        props=("padding_x", "padding_y", "justify", "gap", "content_bias_px", "top_gap", "title_field", "title_font", "title_font_name", "title_font_size", "title_max_lines", "author_field", "author_font", "author_font_name", "author_font_size", "author_max_lines", "separator_width", "lines_inset_x", "lines_field", "lines_limit", "lines_gap", "lines_font", "lines_font_name", "lines_font_size", "line_max_lines", "lines_pair_step", "lines_pair_separator", "note_field", "note_font", "note_font_name", "note_font_size", "note_max_lines"),
         defaults={"title_field": "title", "title_font": "noto_serif_bold", "title_font_size": 20, "title_max_lines": 1, "author_field": "author", "author_font": "noto_serif_light", "author_font_size": 14, "author_max_lines": 1, "separator_width": 50, "lines_field": "lines", "lines_font": "noto_serif_light", "lines_font_size": 16, "lines_limit": 8, "lines_gap": 4, "line_max_lines": 1, "lines_inset_x": 24, "note_field": "note", "note_font": "noto_serif_light", "note_font_size": 12, "note_max_lines": 2, "padding_x": 18, "padding_y": 10, "justify": "center", "gap": 5, "top_gap": 6},
     ),
     "lifebar_card": PresetSpec(
@@ -2222,12 +2363,12 @@ PRESET_REGISTRY: dict[str, PresetSpec] = {
     ),
     "countdown_card": PresetSpec(
         builder=_countdown_card,
-        props=("padding_x", "padding_y", "justify", "gap", "top_gap", "message_field", "message_font", "message_font_name", "message_font_size", "message_max_lines", "events_field", "event_gap", "event_name_field", "event_name_font", "event_name_font_name", "event_name_font_size", "event_name_max_lines", "show_event_date", "event_date_field", "event_date_font", "event_date_font_name", "event_date_font_size", "show_divider", "divider_style", "divider_width", "days_field", "days_font", "days_font_size", "days_label_template", "days_label_font", "days_label_font_name", "days_label_font_size"),
+        props=("padding_x", "padding_y", "justify", "gap", "top_gap", "message_field", "message_font", "message_font_name", "message_font_size", "message_max_lines", "events_field", "event_gap", "event_name_field", "event_name_font", "event_name_font_name", "event_name_font_size", "event_name_max_lines", "show_event_date", "event_date_field", "event_date_font", "event_date_font_name", "event_date_font_size", "show_divider", "divider_style", "divider_width", "days_field", "days_font", "days_font_size", "days_label_template", "days_label_font", "days_label_font_name", "days_label_font_size", "days_label_max_lines", "days_inline_unit", "days_inline_gap", "days_inline_row_align", "days_inline_number_align", "days_inline_label_align"),
         defaults={"message_field": "message", "message_font": "noto_serif_light", "message_font_size": 14, "message_max_lines": 2, "events_field": "events", "event_gap": 8, "event_name_field": "name", "event_name_font": "noto_serif_light", "event_name_font_size": 16, "event_name_max_lines": 1, "event_date_field": "date", "event_date_font_size": 12, "show_event_date": True, "days_field": "days", "days_font_size": 36, "show_divider": True, "padding_x": 18, "padding_y": 10, "justify": "center", "gap": 6, "top_gap": 6},
     ),
     "fitness_card": PresetSpec(
         builder=_fitness_card,
-        props=("padding_x", "padding_y", "justify", "gap", "top_gap", "title_field", "title_font", "title_font_name", "title_font_size", "title_align", "title_max_lines", "duration_field", "duration_font", "duration_font_name", "duration_font_size", "duration_align", "header_divider_style", "header_divider_margin_x", "header_divider_width", "exercise_title", "exercise_icon", "section_title_font", "section_title_font_size", "section_content_indent", "section_gap", "exercises_field", "exercise_limit", "exercise_gap", "exercise_row_gap", "exercise_row_align", "exercise_name_field", "exercise_template", "exercise_font", "exercise_font_name", "exercise_font_size", "exercise_align", "exercise_max_lines", "exercise_reps_field", "exercise_reps_font", "exercise_reps_font_name", "exercise_reps_font_size", "exercise_reps_align", "show_tip_divider", "tip_divider_style", "tip_divider_margin_x", "tip_title", "tip_icon", "tip_field", "tip_font", "tip_font_name", "tip_font_size", "tip_max_lines"),
+        props=("padding_x", "padding_y", "justify", "gap", "top_gap", "title_field", "title_font", "title_font_name", "title_font_size", "title_align", "title_max_lines", "duration_field", "duration_font", "duration_font_name", "duration_font_size", "duration_align", "show_header_divider", "header_divider_style", "header_divider_margin_x", "header_divider_width", "exercise_title", "exercise_icon", "section_title_font", "section_title_font_size", "section_content_indent", "section_gap", "exercise_content_ink_offset_y", "exercises_field", "exercise_limit", "exercise_gap", "exercise_row_gap", "exercise_row_align", "exercise_name_field", "exercise_template", "exercise_font", "exercise_font_name", "exercise_font_size", "exercise_align", "exercise_max_lines", "exercise_reps_field", "exercise_reps_font", "exercise_reps_font_name", "exercise_reps_font_size", "exercise_reps_align", "show_tip_divider", "tip_divider_style", "tip_divider_margin_x", "tip_title", "tip_icon", "tip_field", "tip_font", "tip_font_name", "tip_font_size", "tip_max_lines"),
         defaults={"title_field": "workout_name", "duration_field": "duration", "exercises_field": "exercises", "exercise_name_field": "name", "exercise_reps_field": "reps", "tip_field": "tip"},
     ),
 }

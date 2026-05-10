@@ -112,7 +112,10 @@
         "show_event_date": false,
         "divider_width": 40,
         "days_font_size": 36,
-        "days_label_font_size": 10
+        "days_label_font_size": 10,
+        "days_inline_unit": true,
+        "days_inline_gap": 3,
+        "days_inline_row_align": "end"
       },
       "footer": { "label": "倒计时", "height": 18 }
     },

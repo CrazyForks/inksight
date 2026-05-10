@@ -30,6 +30,7 @@ from .patterns.utils import (
     paste_icon_onto,
     load_icon,
     wrap_text,
+    wrap_text_fill_sidebar,
     has_cjk,
 )
 from .layout_presets import expand_layout_presets
@@ -336,7 +337,11 @@ def _paint_component_debug_overlay(ctx: RenderContext, node: ComponentNode) -> N
         if font is not None and lines and line_height > 0:
             align = node.props.get("align", "left")
             align_y = node.props.get("align_y", "top")
-            y = _component_aligned_y(box.y, box.height, total_height, align_y)
+            try:
+                ink_dy_dbg = int(node.props.get("ink_offset_y", 0) or 0)
+            except (TypeError, ValueError):
+                ink_dy_dbg = 0
+            y = _component_aligned_y(box.y, box.height, total_height, align_y) + ink_dy_dbg
             for line in lines:
                 bbox = font.getbbox(line)
                 line_width = bbox[2] - bbox[0]
@@ -391,7 +396,7 @@ def _uses_component_tree(body: Any, layout: dict) -> bool:
     if layout.get("layout_engine") == "component_tree":
         return True
     if isinstance(body, dict):
-        return body.get("type") in {"column", "row", "repeat", "section_box", "box"}
+        return body.get("type") in {"column", "row", "repeat", "section_box", "box", "float_wrap"}
     return False
 
 
@@ -542,10 +547,30 @@ def _build_component_node(defn: dict, content: dict) -> ComponentNode:
         if not isinstance(items, list):
             items = []
         limit = defn.get("limit", defn.get("max_items", len(items)))
+        try:
+            lim_int = int(limit) if limit is not None else len(items)
+        except (TypeError, ValueError):
+            lim_int = len(items)
+        raw_items = items[:lim_int] if lim_int >= 0 else items
+        pair_step = int(defn.get("pair_step", 1) or 1)
+        pair_sep = str(defn.get("pair_separator", ""))
+        if pair_step > 1 and raw_items:
+            paired: list[Any] = []
+            for i in range(0, len(raw_items), pair_step):
+                chunk = raw_items[i : i + pair_step]
+                if not chunk:
+                    continue
+                if all(isinstance(x, str) for x in chunk):
+                    paired.append(pair_sep.join(chunk))
+                else:
+                    paired.extend(chunk)
+            items = paired
+        else:
+            items = raw_items
         item_def = defn.get("item")
         children: list[ComponentNode] = []
         if isinstance(item_def, dict):
-            for idx, item in enumerate(items[:limit]):
+            for idx, item in enumerate(items):
                 item_content = dict(content)
                 item_content["index"] = idx + 1
                 item_content["_item"] = item
@@ -560,6 +585,98 @@ def _build_component_node(defn: dict, content: dict) -> ComponentNode:
         if isinstance(child, dict)
     ]
     return ComponentNode(kind=kind, props=defn, content=content, children=children)
+
+
+def _float_wrap_field_text(node: ComponentNode) -> str:
+    field_name = node.props.get("text_field") or node.props.get("field")
+    if not field_name:
+        return ""
+    value = node.content.get(str(field_name), "")
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    return str(value)
+
+
+def _measure_float_wrap_node(node: ComponentNode, available_width: int | None, theme: dict, scale: float) -> None:
+    gap = _scaled_value(node.props.get("gap"), scale, 4, 0)
+    float_below_gap = _scaled_value(node.props.get("float_below_gap"), scale, 2, 0)
+    inner_w = max(0, (available_width or 0))
+    if not node.children:
+        node.measured_width = inner_w
+        node.measured_height = 0
+        node.draw_data = {
+            "gap": gap,
+            "float_below_gap": float_below_gap,
+            "float_w": 0,
+            "float_h": 0,
+            "side_lines": [],
+            "below_lines": [],
+            "font": None,
+            "line_height": 0,
+        }
+        return
+    fc = node.children[0]
+    _measure_component_node(fc, available_width, theme, scale)
+    fw, fh = fc.measured_width, fc.measured_height
+    side_w = max(0, inner_w - fw - gap)
+    text = _strip_emoji(_float_wrap_field_text(node))
+    shim = ComponentNode(kind="text", props=node.props, content=node.content, children=[])
+    font, font_size = _component_load_font(
+        shim, text if text.strip() else " ",
+        theme, scale,
+        "noto_serif_regular",
+        theme.get("body_font_size", 12),
+    )
+    line_height = _scaled_value(node.props.get("line_height"), scale, font_size + theme.get("body_line_gap", 4), 1)
+    if not text.strip():
+        node.measured_width = inner_w if inner_w > 0 else fw
+        node.measured_height = fh
+        node.draw_data = {
+            "gap": gap,
+            "float_below_gap": float_below_gap,
+            "float_w": fw,
+            "float_h": fh,
+            "side_lines": [],
+            "below_lines": [],
+            "font": None,
+            "line_height": line_height,
+        }
+        return
+    side_lines, remainder = wrap_text_fill_sidebar(text, font, side_w, fh, line_height)
+    below_w = max(1, inner_w - fw - gap) if inner_w > 0 else max(1, side_w or 1)
+    below_lines = wrap_text(remainder, font, below_w) if remainder else []
+    max_below = node.props.get("wrap_below_max_lines")
+    if max_below is not None:
+        try:
+            mb = int(max_below)
+            if mb >= 0 and len(below_lines) > mb:
+                below_lines = below_lines[:mb]
+                ellipsis = node.props.get("ellipsis", True)
+                if below_lines and ellipsis:
+                    below_lines[-1] = _fit_line_with_ellipsis(below_lines[-1], font, below_w)
+        except (TypeError, ValueError):
+            pass
+    side_text_bottom = len(side_lines) * line_height
+    if below_lines:
+        text_stack_bottom = side_text_bottom + float_below_gap + len(below_lines) * line_height
+        total_h = max(fh, text_stack_bottom)
+    else:
+        total_h = fh
+    node.measured_width = inner_w if inner_w > 0 else fw + gap + max(side_w, 1)
+    node.measured_height = total_h
+    node.draw_data = {
+        "gap": gap,
+        "float_below_gap": float_below_gap,
+        "float_w": fw,
+        "float_h": fh,
+        "below_x_shift": fw + gap,
+        "below_text_width": below_w,
+        "side_text_bottom": side_text_bottom,
+        "side_lines": side_lines,
+        "below_lines": below_lines,
+        "font": font,
+        "line_height": line_height,
+    }
 
 
 def _measure_component_node(node: ComponentNode, available_width: int | None, theme: dict, scale: float) -> None:
@@ -703,6 +820,9 @@ def _measure_component_node(node: ComponentNode, available_width: int | None, th
             "child_gap": child_gap,
         }
         return
+    if node.kind == "float_wrap":
+        _measure_float_wrap_node(node, available_width, theme, scale)
+        return
     if node.kind == "box":
         left, top, right, bottom = _component_padding(node.props, scale)
         inner_width = None if available_width is None else max(0, available_width - left - right)
@@ -817,13 +937,25 @@ def _layout_component_node(node: ComponentNode, x: int, y: int, width: int, heig
         content_indent = node.draw_data.get("content_indent", 0)
         child_gap = node.draw_data.get("child_gap", 0)
         child_x = x + content_indent
-        child_y = y + title_height + title_gap
+        raw_coff = node.props.get("content_ink_offset_y")
+        try:
+            content_off = int(raw_coff) if raw_coff is not None else 0
+        except (TypeError, ValueError):
+            content_off = 0
+        child_y = y + title_height + title_gap + content_off
         child_width = max(0, width - content_indent)
         for idx, child in enumerate([c for c in node.children if c.measured_height > 0 or c.measured_width > 0]):
             _layout_component_node(child, child_x, child_y, child_width, child.measured_height, theme, scale)
             child_y += child.measured_height
             if idx < len(node.children) - 1:
                 child_y += child_gap
+        return
+    if node.kind == "float_wrap":
+        dd = node.draw_data
+        fw = int(dd.get("float_w") or 0)
+        fh = int(dd.get("float_h") or 0)
+        if node.children:
+            _layout_component_node(node.children[0], x, y, fw, fh, theme, scale)
         return
     if node.kind == "box":
         left, top, right, bottom = node.draw_data.get("padding", (0, 0, 0, 0))
@@ -833,6 +965,7 @@ def _layout_component_node(node: ComponentNode, x: int, y: int, width: int, heig
         inner_height = max(0, height - top - bottom)
         for child in node.children:
             _layout_component_node(child, inner_x, inner_y, inner_width, min(inner_height, child.measured_height), theme, scale)
+        return
 
 
 def _paint_component_node(ctx: RenderContext, node: ComponentNode, theme: dict, scale: float) -> None:
@@ -840,6 +973,33 @@ def _paint_component_node(ctx: RenderContext, node: ComponentNode, theme: dict, 
     if box is None:
         return
     if node.kind == "spacer":
+        return
+    if node.kind == "float_wrap":
+        for child in node.children:
+            _paint_component_node(ctx, child, theme, scale)
+        dd = node.draw_data
+        font = dd.get("font")
+        if font is None:
+            return
+        lh = int(dd.get("line_height") or 0)
+        if lh <= 0:
+            return
+        fw = int(dd.get("float_w") or 0)
+        gap = int(dd.get("gap") or 0)
+        fill = ctx.resolve_color(node.props)
+        side_x = box.x + fw + gap
+        sy = box.y
+        for i, ln in enumerate(dd.get("side_lines") or []):
+            ctx.draw.text((side_x, sy + i * lh), ln, fill=fill, font=font)
+        below = dd.get("below_lines") or []
+        if below:
+            stb = int(dd.get("side_text_bottom") or 0)
+            fbg = int(dd.get("float_below_gap") or 0)
+            by = box.y + stb + fbg
+            bx_shift = int(dd.get("below_x_shift") or 0)
+            below_x = box.x + bx_shift
+            for i, ln in enumerate(below):
+                ctx.draw.text((below_x, by + i * lh), ln, fill=fill, font=font)
         return
     if node.kind == "text":
         font = node.draw_data.get("font")
@@ -850,7 +1010,11 @@ def _paint_component_node(ctx: RenderContext, node: ComponentNode, theme: dict, 
         align = node.props.get("align", "left")
         align_y = node.props.get("align_y", "top")
         total_height = node.draw_data.get("text_height", 0)
-        y = _component_aligned_y(box.y, box.height, total_height, align_y)
+        try:
+            ink_dy = int(node.props.get("ink_offset_y", 0) or 0)
+        except (TypeError, ValueError):
+            ink_dy = 0
+        y = _component_aligned_y(box.y, box.height, total_height, align_y) + ink_dy
         for line in lines:
             bbox = font.getbbox(line)
             line_width = bbox[2] - bbox[0]
@@ -2393,15 +2557,69 @@ def _num(v: Any) -> float:
         return 0.0
 
 
+def _calendar_cell_day_str(cell: Any) -> str:
+    if cell is None:
+        return ""
+    return str(cell).strip()
+
+
+def _calendar_row_contains_day(row: Any, day: str) -> bool:
+    if not isinstance(row, list):
+        return False
+    t = str(day).strip()
+    if not t:
+        return False
+    return any(_calendar_cell_day_str(c) == t for c in row)
+
+
+def slice_calendar_rows_around_day(rows: list[Any], today: str, *, max_rows: int) -> list[Any]:
+    """Return at most ``max_rows`` week-rows so ``today`` appears when possible.
+
+    Rules (``max_rows`` == 2):
+    - Today's week is row 1 of the month: show rows 1–2.
+    - Today's week is neither first nor last: show that row and the next row.
+    - Today's week is the last row: show the previous row and the last row.
+    """
+    if max_rows < 1 or not rows:
+        return rows
+    norm: list[Any] = [r if isinstance(r, list) else [] for r in rows]
+    n = len(norm)
+    if n <= max_rows:
+        return norm[:]
+    t = str(today).strip()
+    idx: int | None = None
+    for i, row in enumerate(norm):
+        if _calendar_row_contains_day(row, t):
+            idx = i
+            break
+    if idx is None:
+        return norm[:max_rows]
+    if idx == 0:
+        start = 0
+    elif idx >= n - 1:
+        start = max(0, n - max_rows)
+    else:
+        start = idx
+    return norm[start : start + max_rows]
+
+
 def _render_calendar_grid(ctx: RenderContext, block: dict) -> None:
     """Render a 7-column monthly calendar grid with today highlight and sub-labels."""
-    rows = ctx.get_field(block.get("rows_field", "calendar_rows"))
+    rows_raw = ctx.get_field(block.get("rows_field", "calendar_rows"))
+    rows = rows_raw if isinstance(rows_raw, list) else []
     headers = ctx.get_field(block.get("headers_field", "weekday_headers"))
     today = str(ctx.get_field(block.get("today_field", "today_day")))
     day_labels = ctx.get_field(block.get("labels_field", "day_labels")) or {}
     day_label_types = ctx.get_field(block.get("label_types_field", "day_label_types")) or {}
     if not isinstance(rows, list) or not isinstance(headers, list):
         return
+    mr_raw = block.get("max_rows")
+    if mr_raw is not None:
+        try:
+            rows = slice_calendar_rows_around_day(rows, today, max_rows=max(1, int(mr_raw)))
+        except (TypeError, ValueError):
+            pass
+
     if not isinstance(day_labels, dict):
         day_labels = {}
     if not isinstance(day_label_types, dict):
@@ -2452,16 +2670,17 @@ def _render_calendar_grid(ctx: RenderContext, block: dict) -> None:
         if ctx.y + cell_h > ctx.footer_top - 10:
             break
         for ci, day_str in enumerate(row[:7]):
-            if not day_str:
+            ds = _calendar_cell_day_str(day_str)
+            if not ds:
                 continue
             cx = x0 + ci * cell_w + cell_w // 2
-            bbox = font.getbbox(day_str)
+            bbox = font.getbbox(ds)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
             tx = cx - tw // 2
             ty = ctx.y
 
-            if day_str == today:
+            if ds == str(today).strip():
                 r = max(tw, th) // 2 + today_padding
                 cy = ty + th // 2 + int(2 * ctx.scale)
                 ec = (cx - r, cy - r, cx + r, cy + r)
@@ -2471,14 +2690,14 @@ def _render_calendar_grid(ctx: RenderContext, block: dict) -> None:
                     pass
                 else:
                     ctx.draw.ellipse(ec, fill=today_bg)
-                ctx.draw.text((tx, ty), day_str, fill=today_text_color if today_style != "none" else EINK_FG, font=font)
+                ctx.draw.text((tx, ty), ds, fill=today_text_color if today_style != "none" else EINK_FG, font=font)
             else:
                 color = weekend_color if ci >= weekend_start else EINK_FG
-                ctx.draw.text((tx, ty), day_str, fill=color, font=font)
+                ctx.draw.text((tx, ty), ds, fill=color, font=font)
 
-            sub = day_labels.get(day_str, "")
+            sub = day_labels.get(ds, "")
             if show_day_labels and sub:
-                lt = day_label_types.get(day_str, "lunar")
+                lt = day_label_types.get(ds, "lunar")
                 label_font = reminder_font if lt == "reminder" else sub_font
                 sb = label_font.getbbox(sub)
                 sw = sb[2] - sb[0]
