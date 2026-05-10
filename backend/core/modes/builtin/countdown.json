@@ -119,6 +119,18 @@
       },
       "footer": { "label": "倒计时", "height": 18 }
     },
+    "648x480": {
+      "preset_props": {
+        "top_gap": 18,
+        "gap": 9,
+        "event_gap": 6,
+        "event_name_font_size": 17,
+        "event_date_font_size": 12,
+        "divider_width": 78,
+        "days_font_size": 62,
+        "days_label_font_size": 14
+      }
+    },
     "800x480": {
       "preset_props": {
         "top_gap": 22,

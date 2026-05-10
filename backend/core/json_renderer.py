@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,11 +33,14 @@ from .patterns.utils import (
     wrap_text,
     wrap_text_fill_sidebar,
     has_cjk,
+    safe_font_bbox,
 )
 from .layout_presets import expand_layout_presets
 from .mode_catalog import builtin_catalog_map
 
 logger = logging.getLogger(__name__)
+
+_COMPONENT_SCALE_MAX_648 = float(os.getenv("INKSIGHT_648_COMPONENT_SCALE_MAX", "1.35"))
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 _UPLOAD_DIR = _BACKEND_ROOT / "runtime_uploads"
@@ -405,6 +409,26 @@ def _scaled_value(value: Any, scale: float, default: int = 0, minimum: int = 0) 
     return max(minimum, int(raw * scale))
 
 
+def _component_tree_scale(ctx: RenderContext, theme: dict) -> float:
+    """Return the effective component-tree scale.
+
+    The raw scale for 648x480 is 1.62 (648/400). Applying that to every
+    component gap, padding, and line height makes dense cards too tall. Keep
+    the default configurable so individual screens can tune density without
+    rewriting every mode JSON.
+    """
+    raw = ctx.scale
+    override = theme.get("component_scale") or theme.get("scale")
+    if override is not None:
+        try:
+            return max(0.65, float(override))
+        except (TypeError, ValueError):
+            pass
+    if ctx.screen_w == 648 and ctx.screen_h == 480:
+        return min(raw, _COMPONENT_SCALE_MAX_648)
+    return raw
+
+
 def _component_grow(node: ComponentNode) -> int:
     grow = node.props.get("grow", node.props.get("flex_grow", 0))
     try:
@@ -459,15 +483,18 @@ def _component_load_font(node: ComponentNode, text: str, theme: dict, scale: flo
 def _fit_line_with_ellipsis(text: str, font: Any, max_width: int) -> str:
     if max_width <= 0:
         return "..."
-    if font.getbbox(text)[2] <= max_width:
+    b0 = safe_font_bbox(font, text)
+    if b0[2] - b0[0] <= max_width:
         return text
     ellipsis = "..."
-    if font.getbbox(ellipsis)[2] > max_width:
+    eb = safe_font_bbox(font, ellipsis)
+    if eb[2] - eb[0] > max_width:
         return ellipsis
     trimmed = text.rstrip(". ")
     while trimmed:
         candidate = trimmed.rstrip() + ellipsis
-        if font.getbbox(candidate)[2] <= max_width:
+        cb = safe_font_bbox(font, candidate)
+        if cb[2] - cb[0] <= max_width:
             return candidate
         trimmed = trimmed[:-1]
     return ellipsis
@@ -494,7 +521,7 @@ def _component_measure_text(node: ComponentNode, available_width: int | None, th
     line_height = _scaled_value(node.props.get("line_height"), scale, font_size + theme.get("body_line_gap", 4), 1)
     text_width = 0
     for line in lines:
-        bbox = font.getbbox(line)
+        bbox = safe_font_bbox(font, line)
         text_width = max(text_width, bbox[2] - bbox[0])
     node.measured_width = available_width if available_width is not None else text_width
     node.measured_height = len(lines) * line_height if lines else 0
@@ -1133,7 +1160,7 @@ def _render_component_tree_mode(
         footer_top_offset=footer_top_offset,
         colors=colors,
     )
-    scale = ctx.scale
+    scale = _component_tree_scale(ctx, theme)
     root = _build_component_node(body_tree, content)
     available_height = max(0, ctx.footer_top - status_bar_bottom)
     _measure_component_node(root, screen_w, theme, scale)
@@ -2572,12 +2599,24 @@ def _calendar_row_contains_day(row: Any, day: str) -> bool:
     return any(_calendar_cell_day_str(c) == t for c in row)
 
 
+def _calendar_has_leading_carry_row(norm: list[Any]) -> bool:
+    """True when row 0 is a prior-month tail row and row 1 starts the month's days (has day 1)."""
+    if len(norm) < 2:
+        return False
+    return not _calendar_row_contains_day(norm[0], "1") and _calendar_row_contains_day(
+        norm[1], "1"
+    )
+
+
 def slice_calendar_rows_around_day(rows: list[Any], today: str, *, max_rows: int) -> list[Any]:
     """Return at most ``max_rows`` week-rows so ``today`` appears when possible.
 
     Rules (``max_rows`` == 2):
     - Today's week is row 1 of the month: show rows 1–2.
     - Today's week is neither first nor last: show that row and the next row.
+      If the grid has a leading previous-month row followed by the week that
+      contains day 1, shift the window up by one so week 1 stays visible with
+      today's week.
     - Today's week is the last row: show the previous row and the last row.
     """
     if max_rows < 1 or not rows:
@@ -2598,6 +2637,14 @@ def slice_calendar_rows_around_day(rows: list[Any], today: str, *, max_rows: int
         start = 0
     elif idx >= n - 1:
         start = max(0, n - max_rows)
+    elif (
+        max_rows == 2
+        and 2 <= idx < n - 1
+        and _calendar_has_leading_carry_row(norm)
+    ):
+        # Extra week row from the previous month above row 1: keep "week of day 1" + today week
+        # (avoids jumping past the first full month week when the match index shifts by +1).
+        start = idx - 1
     else:
         start = idx
     return norm[start : start + max_rows]

@@ -50,26 +50,43 @@ _force_bitmap = _font_engine in {"bitmap", "pixel", "pil"}
 _fontmode = os.getenv("INKSIGHT_TEXT_FONTMODE", "L").strip()
 _bitmap_suffix_to_load_size = {9: 12, 10: 13, 11: 15, 12: 16, 13: 14}
 _bitmap_max_request_size = int(os.getenv("INKSIGHT_BITMAP_MAX_REQUEST_SIZE", "16"))
+_bitmap_max_size_delta = int(os.getenv("INKSIGHT_BITMAP_MAX_SIZE_DELTA", "3"))
 
 
 def apply_text_fontmode(draw: ImageDraw.ImageDraw) -> None:
     draw.fontmode = "1" if _fontmode != "L" else "L"
 
 
-def _ordered_bitmap_suffixes(size: int) -> list[int]:
+def _bitmap_load_size_for_suffix(suffix: int) -> int:
+    return _bitmap_suffix_to_load_size.get(suffix, suffix)
+
+
+def _available_bitmap_suffixes(font_name: str) -> list[int]:
+    name = os.path.basename(font_name)
+    stem, _ = os.path.splitext(name)
+    suffixes = set(_bitmap_suffix_to_load_size.keys())
+    try:
+        for rel in os.listdir(BITMAP_DIR):
+            m = re.fullmatch(rf"{re.escape(stem)}-(\d+)\.(pcf|otb|pil|ttf|otf)", rel, re.IGNORECASE)
+            if m:
+                suffixes.add(int(m.group(1)))
+    except OSError:
+        pass
+    return sorted(suffixes)
+
+
+def _ordered_bitmap_suffixes(font_name: str, size: int) -> list[int]:
     return sorted(
-        _bitmap_suffix_to_load_size.keys(),
-        key=lambda s: abs(_bitmap_suffix_to_load_size[s] - size),
+        _available_bitmap_suffixes(font_name),
+        key=lambda s: abs(_bitmap_load_size_for_suffix(s) - size),
     )
 
 
 def _bitmap_load_size_from_path(path: str, requested_size: int) -> int:
-    m = re.search(r"-(\d+)\.(pcf|otb)$", path.lower())
+    m = re.search(r"-(\d+)\.(pcf|otb|ttf|otf)$", path.lower())
     if m:
         suffix = int(m.group(1))
-        mapped = _bitmap_suffix_to_load_size.get(suffix)
-        if mapped is not None:
-            return mapped
+        return _bitmap_load_size_for_suffix(suffix)
     return requested_size
 
 
@@ -79,18 +96,61 @@ def _bitmap_candidates(font_name: str, size: int) -> list[str]:
     ext = ext.lower()
     if ext in {".pil", ".pcf", ".otb"}:
         return [name]
-    suffixes = _ordered_bitmap_suffixes(size)
+    suffixes = _ordered_bitmap_suffixes(font_name, size)
+    suffixes = [
+        s for s in suffixes
+        if abs(_bitmap_load_size_for_suffix(s) - size) <= _bitmap_max_size_delta
+    ]
     sized_pcf = [f"{stem}-{s}.pcf" for s in suffixes]
     sized_otb = [f"{stem}-{s}.otb" for s in suffixes]
     sized_pil = [f"{stem}-{s}.pil" for s in suffixes]
+    sized_ttf = [f"{stem}-{s}.ttf" for s in suffixes]
+    sized_otf = [f"{stem}-{s}.otf" for s in suffixes]
     return [
         *sized_pcf,
-        f"{stem}.pcf",
         *sized_otb,
-        f"{stem}.otb",
         *sized_pil,
+        *sized_ttf,
+        *sized_otf,
+        f"{stem}.pcf",
+        f"{stem}.otb",
         f"{stem}.pil",
+        f"{stem}.ttf",
+        f"{stem}.otf",
     ]
+
+
+def _bitmap_font_accepts_unicode_measurement(font: ImageFont.ImageFont) -> bool:
+    """Skip legacy PIL bitmap fonts that only support latin-1 (breaks CJK layout)."""
+    try:
+        font.getbbox("\u4e94")
+        return True
+    except (UnicodeEncodeError, TypeError, ValueError, OSError):
+        return False
+
+
+def safe_font_bbox(font: ImageFont.ImageFont, text: str) -> tuple[int, int, int, int]:
+    """Bounding box for wrapping/measurement; avoids latin-1-only PIL bitmap crashes on CJK."""
+    if not text:
+        return (0, 0, 0, 0)
+    try:
+        return font.getbbox(text)
+    except (UnicodeEncodeError, TypeError, ValueError, OSError):
+        pass
+    im = Image.new("L", (8, 8), 255)
+    draw = ImageDraw.Draw(im)
+    try:
+        return draw.textbbox((0, 0), text, font=font)
+    except (UnicodeEncodeError, TypeError, ValueError, OSError):
+        pass
+    try:
+        px = int(getattr(font, "size", 0) or 0)
+    except Exception:
+        px = 0
+    if px <= 0:
+        px = 16
+    w = max(1, len(text)) * max(6, int(px * 0.55))
+    return (0, -int(px * 0.8), int(w), int(px * 0.25))
 
 
 def _load_bitmap_font(font_name: str, size: int) -> ImageFont.ImageFont | None:
@@ -103,10 +163,14 @@ def _load_bitmap_font(font_name: str, size: int) -> ImageFont.ImageFont | None:
         try:
             lower = path.lower()
             if lower.endswith(".pil"):
-                return ImageFont.load(path)
-            load_size = _bitmap_load_size_from_path(path, size)
-            return ImageFont.truetype(path, load_size)
-        except OSError:
+                ft = ImageFont.load(path)
+            else:
+                load_size = _bitmap_load_size_from_path(path, size)
+                ft = ImageFont.truetype(path, load_size)
+            if not _bitmap_font_accepts_unicode_measurement(ft):
+                continue
+            return ft
+        except Exception:
             if rel not in _bitmap_warned:
                 _bitmap_warned.add(rel)
                 logger.warning(f"[FONT] Failed to load bitmap font: {path}", exc_info=True)
@@ -159,7 +223,14 @@ def load_font_by_name(name: str, size: int, force_truetype: bool = False) -> Ima
     if os.path.exists(path):
         if name.lower().endswith(".pil"):
             return ImageFont.load(path)
-        return ImageFont.truetype(path, size)
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception as e:
+            logger.warning(f"[FONT] Failed to load {name}: {e}")
+            fallback_cjk = "NotoSerifSC-Regular.ttf"
+            fallback_path = os.path.join(TRUETYPE_DIR, fallback_cjk)
+            if os.path.exists(fallback_path):
+                return ImageFont.truetype(fallback_path, size)
     if name not in _font_warned:
         _font_warned.add(name)
         logger.warning(f"[FONT] Missing {name}, run: python scripts/setup_fonts.py")
@@ -493,8 +564,9 @@ def wrap_text(text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]
         current = ""
         for ch in words:
             test = current + ch
-            bbox = font.getbbox(test)
-            if bbox[2] > max_width:
+            bbox = safe_font_bbox(font, test)
+            span = bbox[2] - bbox[0]
+            if span > max_width:
                 if current:
                     lines.append(current)
                 current = ch
@@ -560,6 +632,6 @@ def render_quote_body(
     y_start = 32 + (screen_h - 32 - 30 - total_h) // 2
 
     for i, line in enumerate(lines):
-        bbox = font.getbbox(line)
+        bbox = safe_font_bbox(font, line)
         x = (screen_w - (bbox[2] - bbox[0])) // 2
         draw.text((x, y_start + i * line_h), line, fill=EINK_FG, font=font)

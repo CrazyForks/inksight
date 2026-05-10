@@ -73,6 +73,8 @@ static const int H = EPD_HEIGHT;
 static const int ROW_BYTES   = W / 8;
 static const int ROW_STRIDE  = (ROW_BYTES + 3) & ~3;  // BMP row stride (4-byte aligned)
 static const int IMG_BUF_LEN = ROW_BYTES * H;
+/** Preprocessor image buffer size for #if (IMG_BUF_LEN is not a cpp constant). */
+#define INKSIGHT_IMG_BUF_BYTES_MACRO ((EPD_WIDTH / 8) * (EPD_HEIGHT))
 
 #ifndef EPD_BPP
 #define EPD_BPP 1

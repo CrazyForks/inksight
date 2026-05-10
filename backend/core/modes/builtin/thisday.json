@@ -91,6 +91,32 @@
       },
       "footer": { "label": "THIS DAY", "height": 18 }
     },
+    "648x480": {
+      "preset_props": {
+        "padding_x": 22,
+        "padding_y": 10,
+        "justify": "center",
+        "gap": 10,
+        "meta_field": "years_ago",
+        "meta_font_size": 13,
+        "hero_field": "year",
+        "hero_font_size": 46,
+        "separator_width": 82,
+        "title_field": "event_title",
+        "title_font": "noto_serif_bold",
+        "title_font_size": 18,
+        "title_max_lines": 2,
+        "body_field": "event_desc",
+        "body_font_size": 14,
+        "body_inset_x": 32,
+        "body_max_lines": 4,
+        "divider_inset_x": 44,
+        "footer_field": "significance",
+        "footer_font": "noto_serif_light",
+        "footer_font_size": 12,
+        "footer_max_lines": 2
+      }
+    },
     "800x480": {
       "preset_props": {
         "padding_x": 28,
