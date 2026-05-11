@@ -40,7 +40,16 @@ from .mode_catalog import builtin_catalog_map
 
 logger = logging.getLogger(__name__)
 
-_COMPONENT_SCALE_MAX_648 = float(os.getenv("INKSIGHT_648_COMPONENT_SCALE_MAX", "1.35"))
+# Cap component-tree scaling on wide panels so preset pt sizes stay near the bitmap PCF grid
+# (see patterns.utils INKSIGHT_BITMAP_MAX_REQUEST_SIZE). width >= LARGE_PANEL_MIN_W covers
+# 583-inch class (648 px) and 7.5-inch class (800 px) bodies.
+_COMPONENT_TREE_SCALE_CAP = float(
+    os.getenv(
+        "INKSIGHT_COMPONENT_TREE_SCALE_MAX",
+        os.getenv("INKSIGHT_648_COMPONENT_SCALE_MAX", "1.35"),
+    )
+)
+_LARGE_PANEL_MIN_W = int(os.getenv("INKSIGHT_LARGE_PANEL_MIN_WIDTH", "648"))
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 _UPLOAD_DIR = _BACKEND_ROOT / "runtime_uploads"
@@ -412,10 +421,10 @@ def _scaled_value(value: Any, scale: float, default: int = 0, minimum: int = 0) 
 def _component_tree_scale(ctx: RenderContext, theme: dict) -> float:
     """Return the effective component-tree scale.
 
-    The raw scale for 648x480 is 1.62 (648/400). Applying that to every
-    component gap, padding, and line height makes dense cards too tall. Keep
-    the default configurable so individual screens can tune density without
-    rewriting every mode JSON.
+    Raw ctx.scale grows with screen width (e.g. 648 px -> 1.62). Applying that fully to font
+    sizes pushes past PCF bitmap coverage and falls back to blurry TTF on e-ink. For wide
+    panels (screen_w >= INKSIGHT_LARGE_PANEL_MIN_WIDTH) we cap by INKSIGHT_COMPONENT_TREE_SCALE_MAX
+    (default 1.35, same legacy cap as the old 648-only branch). Modes may set layout.component_scale.
     """
     raw = ctx.scale
     override = theme.get("component_scale") or theme.get("scale")
@@ -424,8 +433,8 @@ def _component_tree_scale(ctx: RenderContext, theme: dict) -> float:
             return max(0.65, float(override))
         except (TypeError, ValueError):
             pass
-    if ctx.screen_w == 648 and ctx.screen_h == 480:
-        return min(raw, _COMPONENT_SCALE_MAX_648)
+    if ctx.screen_w >= _LARGE_PANEL_MIN_W:
+        return min(raw, _COMPONENT_TREE_SCALE_CAP)
     return raw
 
 
