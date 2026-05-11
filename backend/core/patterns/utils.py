@@ -47,13 +47,25 @@ _font_warned: set[str] = set()
 _bitmap_warned: set[str] = set()
 _font_engine = os.getenv("INKSIGHT_FONT_ENGINE", "bitmap").strip().lower()
 _force_bitmap = _font_engine in {"bitmap", "pixel", "pil"}
-_fontmode = os.getenv("INKSIGHT_TEXT_FONTMODE", "L").strip()
+_fontmode = os.getenv("INKSIGHT_TEXT_FONTMODE", "1").strip() or "1"
 _bitmap_suffix_to_load_size = {9: 12, 10: 13, 11: 15, 12: 16, 13: 14}
-_bitmap_max_request_size = int(os.getenv("INKSIGHT_BITMAP_MAX_REQUEST_SIZE", "16"))
-_bitmap_max_size_delta = int(os.getenv("INKSIGHT_BITMAP_MAX_SIZE_DELTA", "3"))
+# After component-tree scale (~1.35 on 648px+ wide screens), body/title pt often lands in
+# the high teens or low twenties; default 16 blocked PCF and forced anti-aliased TTF on e-ink.
+_bitmap_max_request_size = int(os.getenv("INKSIGHT_BITMAP_MAX_REQUEST_SIZE", "24"))
+_bitmap_max_size_delta = int(os.getenv("INKSIGHT_BITMAP_MAX_SIZE_DELTA", "8"))
 
 
 def apply_text_fontmode(draw: ImageDraw.ImageDraw) -> None:
+    """Configure Pillow text rasterization (`ImageDraw.Draw.fontmode`).
+
+    On mode ``1`` (binary) images, ``fontmode="L"`` anti-aliases into gray values that
+    threshold poorly on e-ink previews and look uniformly blurry across modes (BRIEFING,
+    DAILY, etc.). Mono ``"1"`` matches crisp PCF bitmaps and avoids mushy strokes.
+    """
+    im = getattr(draw, "_image", None) or getattr(draw, "im", None)
+    if im is not None and getattr(im, "mode", None) == "1":
+        draw.fontmode = "1"
+        return
     draw.fontmode = "1" if _fontmode != "L" else "L"
 
 
