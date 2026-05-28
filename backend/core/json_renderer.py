@@ -1485,10 +1485,15 @@ def _render_text(ctx: RenderContext, block: dict) -> None:
         return
 
     font_size = int(block.get("font_size", 14) * ctx.scale)
+    font_name = block.get("font_name")
     font_key = block.get("font", "noto_serif_regular")
-    if has_cjk(text):
+    if font_name and not has_cjk(text):
+        font = load_font_by_name(font_name, font_size)
+    elif has_cjk(text):
         font_key = _pick_cjk_font(font_key)
-    font = load_font(font_key, font_size)
+        font = load_font(font_key, font_size)
+    else:
+        font = load_font(font_key, font_size)
 
     align = block.get("align", "center")
     margin_x = block.get("margin_x")
@@ -1530,7 +1535,16 @@ def _render_text(ctx: RenderContext, block: dict) -> None:
         ctx.draw.text((x, line_y), line, fill=ctx.resolve_color(block), font=font)
         rendered_lines += 1
     if rendered_lines:
-        ctx.y = start_y + (rendered_lines - 1) * line_height + last_line_h
+        used_h = (rendered_lines - 1) * line_height + last_line_h
+        if block.get("reserve_line_height"):
+            used_h = max(used_h, rendered_lines * line_height)
+        min_height = block.get("min_height")
+        if min_height is not None:
+            used_h = max(used_h, int(min_height * ctx.scale))
+        ctx.y = start_y + used_h
+        margin_bottom = block.get("margin_bottom")
+        if margin_bottom is not None:
+            ctx.y += int(margin_bottom * ctx.scale)
 
 
 def _render_separator(ctx: RenderContext, block: dict) -> None:
@@ -1738,6 +1752,66 @@ def _render_spacer(ctx: RenderContext, block: dict) -> None:
     except (TypeError, ValueError):
         h = 12.0
     ctx.y += max(0, int(round(h * ctx.scale)))
+
+
+def _render_rating_choices(ctx: RenderContext, block: dict) -> None:
+    labels = block.get("labels") or ["忘了", "模糊", "记住"]
+    if not isinstance(labels, list) or not labels:
+        return
+
+    try:
+        selected = int(ctx.get_field(block.get("selected_field", "rating_cursor")) or 0)
+    except (TypeError, ValueError):
+        selected = 0
+    selected %= len(labels)
+
+    font_size = int(block.get("font_size", 14) * ctx.scale)
+    font_key = block.get("font", "noto_serif_regular")
+    if any(has_cjk(str(label)) for label in labels):
+        font_key = _pick_cjk_font(font_key)
+    font = load_font(font_key, font_size)
+
+    margin_x = int(block.get("margin_x", 26) * ctx.scale)
+    gap = int(block.get("gap", 8) * ctx.scale)
+    height = int(block.get("height", 24) * ctx.scale)
+    outline_width = max(1, int(block.get("line_width", 1) * ctx.scale))
+    margin_bottom = int(block.get("margin_bottom", 6) * ctx.scale)
+    selected_style = str(block.get("selected_style", "fill")).lower()
+
+    count = len(labels)
+    total_w = max(20, ctx.available_width - margin_x * 2)
+    chip_w = max(12, (total_w - gap * (count - 1)) // count)
+    y = ctx.y
+    x = ctx.x_offset + margin_x
+
+    for i, raw_label in enumerate(labels):
+        label = str(raw_label)
+        x0 = x + i * (chip_w + gap)
+        x1 = x0 + chip_w
+        y1 = y + height
+        is_selected = i == selected
+        if is_selected and selected_style != "cursor":
+            ctx.draw.rectangle([x0, y, x1, y1], fill=EINK_FG)
+            text_fill = EINK_BG
+        else:
+            ctx.draw.rectangle([x0, y, x1, y1], outline=EINK_FG, width=outline_width)
+            text_fill = EINK_FG
+
+        bbox = font.getbbox(label)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        tx = x0 + (chip_w - text_w) // 2 - bbox[0]
+        ty = y + (height - text_h) // 2 - bbox[1]
+        ctx.draw.text((tx, ty), label, fill=text_fill, font=font)
+        if is_selected and selected_style == "cursor":
+            marker_w = max(6, int(block.get("cursor_width", 12) * ctx.scale))
+            marker_h = max(2, int(block.get("cursor_height", 3) * ctx.scale))
+            marker_gap = max(1, int(block.get("cursor_gap", 2) * ctx.scale))
+            mx0 = x0 + (chip_w - marker_w) // 2
+            my0 = max(y + 1, y1 - marker_h - marker_gap)
+            ctx.draw.rectangle([mx0, my0, mx0 + marker_w, my0 + marker_h], fill=EINK_FG)
+
+    ctx.y = y + height + margin_bottom
 
 
 def _render_icon_text(ctx: RenderContext, block: dict) -> None:
@@ -2796,10 +2870,10 @@ def _render_timetable_daily(ctx: RenderContext, block: dict) -> None:
         is_current = slot.get(current_field, False)
         loc = str(slot.get(location_field, ""))
 
-        if is_current and ctx.colors >= 3:
+        if is_current:
             ctx.draw.rectangle(
                 [x0, ctx.y, x0 + grid_w, ctx.y + row_h - 1],
-                fill=highlight_color,
+                fill=highlight_color if ctx.colors >= 3 else EINK_FG,
             )
             text_color = current_text_color
         else:
@@ -2917,7 +2991,8 @@ def _render_timetable_weekly(ctx: RenderContext, block: dict) -> None:
         row_h = max(int(16 * ctx.scale), avail_h // max(n_periods, 1))
 
     time_col_w = int(grid_w * time_col_ratio)
-    day_col_w = (grid_w - time_col_w) // 5
+    day_count = max(1, len(weekdays))
+    day_col_w = (grid_w - time_col_w) // day_count
 
     highlight_color = _resolve_named_color(ctx, block.get("highlight_color", "red"), EINK_FG)
     accent_color = _resolve_named_color(ctx, block.get("accent_color", "yellow"), EINK_FG)
@@ -2925,12 +3000,24 @@ def _render_timetable_weekly(ctx: RenderContext, block: dict) -> None:
     show_location = bool(block.get("show_location", True))
 
     hx = x0 + time_col_w
-    for di, wd_label in enumerate(weekdays[:5]):
-        cx = hx + di * day_col_w + day_col_w // 2
+    for di, wd_label in enumerate(weekdays[:day_count]):
+        cell_x = hx + di * day_col_w
+        cx = cell_x + day_col_w // 2
         bb = header_font.getbbox(wd_label)
         tw = bb[2] - bb[0]
         tx = cx - tw // 2
         color = highlight_color if di == current_day else EINK_FG
+        if di == current_day and ctx.colors < 3:
+            ctx.draw.rectangle(
+                [
+                    cell_x + 1,
+                    ctx.y,
+                    cell_x + day_col_w - 2,
+                    ctx.y + header_h - 1,
+                ],
+                fill=EINK_FG,
+            )
+            color = EINK_BG
         ctx.draw.text((tx, ctx.y), wd_label, fill=color, font=header_font)
     ctx.y += header_h
     ctx.draw.line([(x0, ctx.y), (x0 + grid_w, ctx.y)], fill=EINK_FG, width=1)
@@ -2970,23 +3057,24 @@ def _render_timetable_weekly(ctx: RenderContext, block: dict) -> None:
 
         row_data = grid[pi] if pi < len(grid) else []
 
-        for di in range(5):
+        for di in range(day_count):
             cell_x = x0 + time_col_w + di * day_col_w
             cell_text = str(row_data[di]) if di < len(row_data) else ""
 
             is_current_cell = (di == current_day and pi == current_period)
             highlight_col = (not has_time_range and di == current_day)
+            highlight_today_course_bw = (ctx.colors < 3 and di == current_day and bool(cell_text))
 
-            if is_current_cell and ctx.colors >= 3:
+            if is_current_cell or highlight_today_course_bw:
                 ctx.draw.rectangle(
                     [cell_x + 1, ctx.y, cell_x + day_col_w - 1, ctx.y + row_h - 1],
-                    fill=highlight_color,
+                    fill=highlight_color if ctx.colors >= 3 else EINK_FG,
                 )
                 text_color = current_text_color
-            elif highlight_col and ctx.colors >= 3:
+            elif highlight_col:
                 ctx.draw.rectangle(
                     [cell_x + 1, ctx.y, cell_x + day_col_w - 1, ctx.y + row_h - 1],
-                    fill=highlight_color,
+                    fill=highlight_color if ctx.colors >= 3 else EINK_FG,
                 )
                 text_color = current_text_color
             else:
@@ -3019,6 +3107,7 @@ _BLOCK_RENDERERS["list"] = _render_list
 _BLOCK_RENDERERS["vertical_stack"] = _render_vertical_stack
 _BLOCK_RENDERERS["conditional"] = _render_conditional
 _BLOCK_RENDERERS["spacer"] = _render_spacer
+_BLOCK_RENDERERS["rating_choices"] = _render_rating_choices
 _BLOCK_RENDERERS["icon_text"] = _render_icon_text
 _BLOCK_RENDERERS["weather_icon_text"] = _render_weather_icon_text
 _BLOCK_RENDERERS["two_column"] = _render_two_column

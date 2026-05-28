@@ -111,6 +111,9 @@ static const int   WIFI_TIMEOUT    = 15000;   // ms
 static const int   HTTP_TIMEOUT    = 30000;   // ms
 static const int   CFG_BTN_HOLD_MS = 2000;    // Long press duration to trigger config mode
 static const int   AI_CHAT_BTN_HOLD_MS = 3000; // Long press duration to enter AI chat mode
+static const int   VOCAB_ENTER_HOLD_MS = 2000; // Long press duration to enter vocab review
+static const int   VOCAB_BTN_HOLD_MS = 1500;  // Long press duration to submit vocab rating
+static const int   VOCAB_EXIT_HOLD_MS = 5000; // Long press duration to exit vocab review
 static const int   SHORT_PRESS_MIN_MS = 50;   // Minimum short press duration (debounce)
 static const int   LIVE_POLL_MS = 5000;       // Poll interval for pending remote actions
 static const int   LIVE_WIFI_RETRY_MS = 5000; // Retry interval when WiFi is disconnected
@@ -140,6 +143,9 @@ static const int DEBUG_REFRESH_MIN = 1;  // 1 minute for debugging
 
 #ifndef AUTO_BOOT_AI_CHAT
 #define AUTO_BOOT_AI_CHAT 0
+#endif
+#ifndef VOCAB_REVIEW_BUILD
+#define VOCAB_REVIEW_BUILD 0
 #endif
 
 #endif // INKSIGHT_CONFIG_H

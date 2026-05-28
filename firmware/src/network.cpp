@@ -193,12 +193,15 @@ static bool readExact(WiFiClient *s, uint8_t *buf, int len) {
     int got = 0;
     unsigned long t0 = millis();
     while (got < len) {
-        if (!s->connected() && !s->available()) {
-            Serial.printf("readExact: disconnected %d/%d\n", got, len);
-            return false;
-        }
         if (millis() - t0 > 10000) {
-            Serial.printf("readExact: timeout %d/%d\n", got, len);
+            Serial.printf(
+                "readExact: timeout %d/%d connected=%d available=%d wifi=%d\n",
+                got,
+                len,
+                s->connected() ? 1 : 0,
+                s->available(),
+                WiFi.status()
+            );
             return false;
         }
         int avail = s->available();
@@ -206,6 +209,8 @@ static bool readExact(WiFiClient *s, uint8_t *buf, int len) {
             int r = s->readBytes(buf + got, min(avail, len - got));
             got += r;
             t0 = millis();  // Reset timeout on progress
+        } else {
+            delay(1);
         }
     }
     return true;
@@ -589,22 +594,33 @@ bool fetchBMP(bool nextMode, bool *isFallback, String *renderedModeIdOut) {
 
     bool useSSL = cfgServer.startsWith("https://");
     for (int attempt = 0; attempt < 2; attempt++) {
-        if (checkAbort()) return false;
+        if (checkAbort()) {
+            Serial.println("[RENDER] fetchBMP aborted before HTTP");
+            return false;
+        }
         WiFiClient plainClient;
         WiFiClientSecure secClient;
         HTTPClient http;
+        bool begun = false;
         if (useSSL) {
             secClient.setCACert(ROOT_CA);
-            http.begin(secClient, url);
+            begun = http.begin(secClient, url);
         } else {
-            http.begin(plainClient, url);
+            begun = http.begin(plainClient, url);
         }
+        if (!begun) {
+            Serial.println("[RENDER] http.begin failed");
+            http.end();
+            return false;
+        }
+        http.setReuse(false);
         http.setTimeout(HTTP_TIMEOUT);
         http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
         const char *headerKeys[] = {"X-Content-Fallback", "X-Refresh-Minutes", "X-Mode-Id"};
         http.collectHeaders(headerKeys, 3);
 
         http.addHeader("Accept-Encoding", "identity");
+        http.addHeader("Connection", "close");
         if (cfgDeviceToken.length() > 0) {
             http.addHeader("X-Device-Token", cfgDeviceToken);
         }
@@ -926,6 +942,216 @@ bool postRuntimeMode(const char *mode) {
         if (code >= 200 && code < 300) {
             return true;
         }
+        if (!recoverDeviceTokenIfUnauthorized(code)) {
+            return false;
+        }
+    }
+    return false;
+}
+
+bool postVocabEvent(const char *action, const char *rating) {
+    if (!ensureDeviceToken()) return false;
+    String mac = WiFi.macAddress();
+    String url = cfgServer + "/api/device/" + mac + "/vocab/event";
+    bool useSSL = cfgServer.startsWith("https://");
+    String body = String("{\"action\":\"") + (action ? action : "") + "\"";
+    if (rating && strlen(rating) > 0) {
+        body += String(",\"rating\":\"") + rating + "\"";
+    }
+    body += "}";
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        WiFiClient plainClient;
+        WiFiClientSecure secClient;
+        HTTPClient http;
+        if (useSSL) {
+            secClient.setCACert(ROOT_CA);
+            http.begin(secClient, url);
+        } else {
+            http.begin(plainClient, url);
+        }
+        http.addHeader("Content-Type", "application/json");
+        http.setTimeout(HTTP_TIMEOUT);
+        if (cfgDeviceToken.length() > 0) {
+            http.addHeader("X-Device-Token", cfgDeviceToken);
+        }
+
+        int code = http.POST(body);
+        http.end();
+        Serial.printf("[VOCAB] POST %s -> %d\n", action ? action : "", code);
+        if (code >= 200 && code < 300) {
+            return true;
+        }
+        if (!recoverDeviceTokenIfUnauthorized(code)) {
+            return false;
+        }
+    }
+    return false;
+}
+
+static uint16_t readLe16(const uint8_t *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static uint32_t readLe32(const uint8_t *p) {
+    return (uint32_t)p[0]
+        | ((uint32_t)p[1] << 8)
+        | ((uint32_t)p[2] << 16)
+        | ((uint32_t)p[3] << 24);
+}
+
+bool fetchVocabReviewPack(uint8_t *ratingParts, size_t partLen, int yStart, int yEnd) {
+    if (!ratingParts || partLen == 0) return false;
+    if (!ensureDeviceToken()) return false;
+
+    float v = readBatteryVoltage();
+    String mac = WiFi.macAddress();
+    String url = cfgServer + "/api/device/" + mac + "/vocab/review-pack"
+               + "?v=" + String(v, 2)
+               + "&w=" + String(W)
+               + "&h=" + String(H)
+               + "&y_start=" + String(yStart)
+               + "&y_end=" + String(yEnd);
+    bool useSSL = cfgServer.startsWith("https://");
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        WiFiClient plainClient;
+        WiFiClientSecure secClient;
+        HTTPClient http;
+        if (useSSL) {
+            secClient.setCACert(ROOT_CA);
+            http.begin(secClient, url);
+        } else {
+            http.begin(plainClient, url);
+        }
+        http.setTimeout(HTTP_TIMEOUT);
+        http.addHeader("Accept-Encoding", "identity");
+        if (cfgDeviceToken.length() > 0) {
+            http.addHeader("X-Device-Token", cfgDeviceToken);
+        }
+
+        int code = http.GET();
+        Serial.printf("[VOCAB] GET review-pack -> %d\n", code);
+        if (code != 200) {
+            if (code < 0) {
+                Serial.printf("[VOCAB] review-pack error: %s\n", http.errorToString(code).c_str());
+            } else {
+                String body = http.getString();
+                Serial.printf("[VOCAB] review-pack response: %s\n", body.substring(0, 200).c_str());
+            }
+            http.end();
+            if (!recoverDeviceTokenIfUnauthorized(code)) return false;
+            continue;
+        }
+
+        WiFiClient *stream = http.getStreamPtr();
+        uint8_t header[24];
+        if (!readExact(stream, header, sizeof(header))) {
+            http.end();
+            return false;
+        }
+        if (memcmp(header, "IVP1", 4) != 0) {
+            Serial.println("[VOCAB] review-pack bad magic");
+            http.end();
+            return false;
+        }
+        uint16_t packW = readLe16(header + 4);
+        uint16_t packH = readLe16(header + 6);
+        uint16_t packYStart = readLe16(header + 8);
+        uint16_t packYEnd = readLe16(header + 10);
+        uint32_t fullLen = readLe32(header + 12);
+        uint32_t packPartLen = readLe32(header + 16);
+        uint8_t ratingCount = header[20];
+        if (packW != W || packH != H || packYStart != yStart || packYEnd != yEnd ||
+            fullLen != IMG_BUF_LEN || packPartLen != partLen || ratingCount != 3) {
+            Serial.printf("[VOCAB] review-pack mismatch w=%u h=%u y=%u-%u full=%u part=%u count=%u\n",
+                          packW, packH, packYStart, packYEnd, fullLen, packPartLen, ratingCount);
+            http.end();
+            return false;
+        }
+        if (!readExact(stream, imgBuf, IMG_BUF_LEN)) {
+            http.end();
+            return false;
+        }
+        if (!readExact(stream, ratingParts, partLen * 3)) {
+            http.end();
+            return false;
+        }
+        http.end();
+        Serial.printf("[VOCAB] review-pack OK front=%d parts=%u\n", IMG_BUF_LEN, (unsigned)(partLen * 3));
+        lastHeartbeatAt = millis();
+        return true;
+    }
+    return false;
+}
+
+bool fetchVocabAudio(AudioChunkCallback onChunk, void *userData) {
+    if (!onChunk) return false;
+    if (!ensureDeviceToken()) return false;
+    String mac = WiFi.macAddress();
+    String url = cfgServer + "/api/device/" + mac + "/vocab/audio";
+    bool useSSL = cfgServer.startsWith("https://");
+    for (int attempt = 0; attempt < 2; attempt++) {
+        WiFiClient plainClient;
+        WiFiClientSecure secClient;
+        HTTPClient http;
+        if (useSSL) {
+            secClient.setCACert(ROOT_CA);
+            http.begin(secClient, url);
+        } else {
+            http.begin(plainClient, url);
+        }
+        http.setTimeout(60000);
+        if (cfgDeviceToken.length() > 0) {
+            http.addHeader("X-Device-Token", cfgDeviceToken);
+        }
+
+        int code = http.GET();
+        int contentLen = http.getSize();
+        if (code == 204) {
+            Serial.println("[VOCAB] audio -> 204 no content");
+            http.end();
+            return true;
+        }
+        if (code == 200) {
+            WiFiClient *stream = http.getStreamPtr();
+            uint8_t buffer[1024];
+            size_t totalRead = 0;
+            unsigned long lastDataAt = millis();
+            while (http.connected() || stream->available()) {
+                int available = stream->available();
+                if (available <= 0) {
+                    if (contentLen >= 0 && totalRead >= (size_t)contentLen) {
+                        break;
+                    }
+                    if (millis() - lastDataAt > 3000) {
+                        Serial.printf("[VOCAB] audio read timeout total=%u expected=%d connected=%d\n",
+                                      (unsigned int)totalRead, contentLen, http.connected() ? 1 : 0);
+                        break;
+                    }
+                    delay(1);
+                    continue;
+                }
+                int readLen = stream->readBytes(buffer, min(available, (int)sizeof(buffer)));
+                if (readLen > 0) {
+                    totalRead += (size_t)readLen;
+                    lastDataAt = millis();
+                    onChunk(buffer, (size_t)readLen, userData);
+                }
+                if (contentLen >= 0 && totalRead >= (size_t)contentLen) {
+                    break;
+                }
+            }
+            http.end();
+            return true;
+        }
+        if (code < 0) {
+            Serial.printf("[VOCAB] audio error: %s\n", http.errorToString(code).c_str());
+        } else {
+            String body = http.getString();
+            Serial.printf("[VOCAB] audio -> %d %s\n", code, body.substring(0, 200).c_str());
+        }
+        http.end();
         if (!recoverDeviceTokenIfUnauthorized(code)) {
             return false;
         }

@@ -44,6 +44,7 @@ bool ensureColorBuf() {
 
 // ── Voice constants ─────────────────────────────────────────
 static const char *AI_CHAT_MODE_ID = "AI_CHAT";
+static const char *VOCAB_REVIEW_MODE_ID = "VOCAB_REVIEW";
 static const int VOICE_SILENCE_COMMIT_MS = 600;
 static const float VOICE_STREAM_VAD_THRESHOLD = 150.0f;
 static const unsigned long VOICE_MAX_CAPTURE_MS = 8000;
@@ -92,6 +93,7 @@ struct DeviceContext {
     unsigned long btnPressStart = 0;
     unsigned long aiBtnPressStart = 0;
     bool ignoreConfigButtonUntilRelease = false;
+    bool ignoreAiButtonUntilRelease = false;
     bool liveMode = false;
     unsigned long lastLivePollAt = 0;
     unsigned long lastLiveWiFiRetryAt = 0;
@@ -105,6 +107,13 @@ struct DeviceContext {
     bool wantEnterLiveMode = false;
     bool wantEnterAiChatMode = false;
     bool wantSingleVoiceTurn = false;
+    bool wantEnterVocabReview = false;
+    bool wantVocabFlip = false;
+    bool wantVocabNextRating = false;
+    bool wantVocabSubmitRating = false;
+    bool wantVocabExit = false;
+    bool vocabReviewBackSide = false;
+    String currentRenderedModeId;
     String switchToModeId;
 };
 
@@ -122,8 +131,175 @@ static uint32_t computeChecksum(const uint8_t *buf, int len) {
 }
 
 // ── Forward declarations ────────────────────────────────────
+#if VOCAB_REVIEW_BUILD
+static uint8_t *vocabRatingParts = nullptr;
+static size_t vocabRatingPartLen = 0;
+static int vocabRegionYStart = 0;
+static int vocabRegionYEnd = 0;
+static int vocabRatingCursor = 0;
+
+static int vocabReviewRegionYStart() {
+    return (H <= 128) ? (H * 54 / 100) : (H * 52 / 100);
+}
+
+static int vocabReviewRegionYEnd() {
+    return H - max(18, H / 12);
+}
+
+static size_t vocabReviewRegionLen() {
+    int y0 = vocabReviewRegionYStart();
+    int y1 = vocabReviewRegionYEnd();
+    if (y1 <= y0) return 0;
+    return (size_t)ROW_BYTES * (size_t)(y1 - y0);
+}
+
+static bool ensureVocabRatingCache() {
+    size_t partLen = vocabReviewRegionLen();
+    if (partLen == 0) return false;
+    if (vocabRatingParts && vocabRatingPartLen == partLen) return true;
+    if (vocabRatingParts) {
+        free(vocabRatingParts);
+        vocabRatingParts = nullptr;
+    }
+    vocabRatingParts = (uint8_t *)malloc(partLen * 3);
+    if (!vocabRatingParts) {
+        vocabRatingPartLen = 0;
+        Serial.println("[VOCAB] rating cache alloc failed");
+        return false;
+    }
+    vocabRatingPartLen = partLen;
+    vocabRegionYStart = vocabReviewRegionYStart();
+    vocabRegionYEnd = vocabReviewRegionYEnd();
+    return true;
+}
+
+static void copyVocabRegionToImage(const uint8_t *part) {
+    if (!part) return;
+    int regionH = vocabRegionYEnd - vocabRegionYStart;
+    for (int row = 0; row < regionH; row++) {
+        memcpy(
+            imgBuf + (vocabRegionYStart + row) * ROW_BYTES,
+            part + row * ROW_BYTES,
+            ROW_BYTES
+        );
+    }
+}
+
+static bool displayVocabDiffRegion(const uint8_t *newPart, const uint8_t *oldPart) {
+    if (!newPart || !oldPart) return false;
+    int regionH = vocabRegionYEnd - vocabRegionYStart;
+    int minByte = ROW_BYTES;
+    int maxByte = -1;
+    int minRow = regionH;
+    int maxRow = -1;
+
+    for (int row = 0; row < regionH; row++) {
+        const uint8_t *newRow = newPart + row * ROW_BYTES;
+        const uint8_t *oldRow = oldPart + row * ROW_BYTES;
+        for (int byteX = 0; byteX < ROW_BYTES; byteX++) {
+            if (newRow[byteX] == oldRow[byteX]) continue;
+            if (byteX < minByte) minByte = byteX;
+            if (byteX > maxByte) maxByte = byteX;
+            if (row < minRow) minRow = row;
+            if (row > maxRow) maxRow = row;
+        }
+    }
+
+    if (maxByte < minByte || maxRow < minRow) return true;
+
+    int xByte0 = max(0, minByte - 1);
+    int xByte1 = min(ROW_BYTES, maxByte + 2);
+    int y0 = max(0, minRow - 2);
+    int y1 = min(regionH, maxRow + 3);
+    int widthBytes = xByte1 - xByte0;
+    int height = y1 - y0;
+    int refreshX0 = xByte0 * 8;
+    int refreshY0 = vocabRegionYStart + y0;
+    int refreshX1 = xByte1 * 8;
+    int refreshY1 = vocabRegionYStart + y1;
+    int refreshW = refreshX1 - refreshX0;
+    int refreshH = refreshY1 - refreshY0;
+    int areaPctX100 = (refreshW * refreshH * 10000) / max(1, W * H);
+    Serial.printf(
+        "[VOCAB] rating partial rect x=%d y=%d w=%d h=%d area=%d.%02d%% mode=with-old\n",
+        refreshX0,
+        refreshY0,
+        refreshW,
+        refreshH,
+        areaPctX100 / 100,
+        areaPctX100 % 100
+    );
+    size_t patchLen = (size_t)widthBytes * (size_t)height;
+    uint8_t *newPatch = (uint8_t *)malloc(patchLen);
+    uint8_t *oldPatch = (uint8_t *)malloc(patchLen);
+    if (!newPatch || !oldPatch) {
+        if (newPatch) free(newPatch);
+        if (oldPatch) free(oldPatch);
+        epdPartialDisplayWithOld((uint8_t *)newPart, oldPart, 0, vocabRegionYStart, W, vocabRegionYEnd);
+        return true;
+    }
+
+    for (int row = 0; row < height; row++) {
+        memcpy(newPatch + row * widthBytes, newPart + (y0 + row) * ROW_BYTES + xByte0, widthBytes);
+        memcpy(oldPatch + row * widthBytes, oldPart + (y0 + row) * ROW_BYTES + xByte0, widthBytes);
+    }
+
+    epdPartialDisplayWithOld(
+        newPatch,
+        oldPatch,
+        refreshX0,
+        refreshY0,
+        refreshX1,
+        refreshY1
+    );
+    free(newPatch);
+    free(oldPatch);
+    return true;
+}
+
+static bool displayCachedVocabRating(int cursor) {
+    if (!vocabRatingParts || vocabRatingPartLen == 0 || !epdSupportsPartialRefresh()) {
+        return false;
+    }
+    cursor = ((cursor % 3) + 3) % 3;
+    uint8_t *oldPart = (uint8_t *)malloc(vocabRatingPartLen);
+    if (!oldPart) return false;
+
+    int regionH = vocabRegionYEnd - vocabRegionYStart;
+    for (int row = 0; row < regionH; row++) {
+        memcpy(
+            oldPart + row * ROW_BYTES,
+            imgBuf + (vocabRegionYStart + row) * ROW_BYTES,
+            ROW_BYTES
+        );
+    }
+
+    uint8_t *newPart = vocabRatingParts + vocabRatingPartLen * cursor;
+    copyVocabRegionToImage(newPart);
+    displayVocabDiffRegion(newPart, oldPart);
+    free(oldPart);
+    return true;
+}
+
+static bool fetchAndDisplayVocabPack() {
+    if (!ensureVocabRatingCache()) return false;
+    if (!fetchVocabReviewPack(vocabRatingParts, vocabRatingPartLen, vocabRegionYStart, vocabRegionYEnd)) {
+        return false;
+    }
+    vocabRatingCursor = 0;
+    ctx.vocabReviewBackSide = false;
+    ctx.currentRenderedModeId = VOCAB_REVIEW_MODE_ID;
+    cacheSave(imgBuf, IMG_BUF_LEN);
+    smartDisplay(imgBuf);
+    lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+    lastRenderedPeriod = currentPeriodIndex();
+    ctx.lastClockTick = millis();
+    return true;
+}
+#endif
+
 static void checkConfigButton();
-static void triggerImmediateRefresh(bool nextMode = false, bool keepWiFi = false);
+static void triggerImmediateRefresh(bool nextMode = false, bool keepWiFi = false, bool partialVocabRating = false, const uint8_t *partialOldImage = nullptr, bool skipNtp = false);
 static void handleLiveMode();
 static bool waitForContentReady();
 static void handleFailure(const char *reason);
@@ -221,6 +397,82 @@ static void drainSendQueue(AudioService &as) {
         voiceWsSendRawPacket(pkt->data, pkt->dataLen);
         as.ReleaseSendPacket(pkt);
     }
+}
+
+struct VocabAudioPlaybackCtx {
+    AudioCodec *codec = nullptr;
+    size_t bytesWritten = 0;
+    size_t bytesDropped = 0;
+    uint8_t pendingByte = 0;
+    bool hasPendingByte = false;
+};
+
+static void vocabAudioChunkCallback(const uint8_t *data, size_t len, void *userData) {
+    VocabAudioPlaybackCtx *ctx = static_cast<VocabAudioPlaybackCtx *>(userData);
+    if (!ctx || !ctx->codec || !data || len == 0) return;
+
+    const uint8_t *pcm = data;
+    size_t pcmLen = len;
+    int16_t firstSample = 0;
+    if (ctx->hasPendingByte && pcmLen > 0) {
+        firstSample = (int16_t)((uint16_t)ctx->pendingByte | ((uint16_t)pcm[0] << 8));
+        int written = ctx->codec->Write(&firstSample, 1);
+        if (written == 1) ctx->bytesWritten += 2;
+        else ctx->bytesDropped += 2;
+        pcm++;
+        pcmLen--;
+        ctx->hasPendingByte = false;
+    }
+
+    if (pcmLen >= 2) {
+        size_t evenLen = pcmLen & ~((size_t)1);
+        int samples = (int)(evenLen / sizeof(int16_t));
+        int written = ctx->codec->Write((const int16_t *)pcm, samples);
+        if (written > 0) ctx->bytesWritten += (size_t)written * sizeof(int16_t);
+        if (written < samples) ctx->bytesDropped += (size_t)(samples - written) * sizeof(int16_t);
+        pcm += evenLen;
+        pcmLen -= evenLen;
+    }
+
+    if (pcmLen == 1) {
+        ctx->pendingByte = pcm[0];
+        ctx->hasPendingByte = true;
+    }
+}
+
+static void playCurrentVocabWordAudio() {
+#if VOCAB_REVIEW_BUILD
+    Serial.println("[VOCAB] Playing current word audio...");
+    static Inmp441Max98357Codec codec(false);
+    if (!codec.Start()) {
+        Serial.println("[VOCAB] codec start failed");
+        return;
+    }
+
+    codec.EnableOutput(true);
+    if (!codec.outputEnabled()) {
+        Serial.println("[VOCAB] codec output enable failed");
+        codec.Stop();
+        return;
+    }
+
+    VocabAudioPlaybackCtx playbackCtx;
+    playbackCtx.codec = &codec;
+    bool ok = fetchVocabAudio(vocabAudioChunkCallback, &playbackCtx);
+    if (!ok) {
+        Serial.println("[VOCAB] audio fetch failed");
+    }
+    if (playbackCtx.hasPendingByte) {
+        playbackCtx.bytesDropped += 1;
+    }
+    if (playbackCtx.bytesDropped > 0) {
+        Serial.printf("[VOCAB] audio dropped %u bytes\n", (unsigned int)playbackCtx.bytesDropped);
+    }
+
+    unsigned long tailMs = playbackCtx.bytesWritten > 0 ? 250 : 80;
+    delay(tailMs);
+    codec.Stop();
+#endif
 }
 #endif
 
@@ -648,7 +900,7 @@ static const int AUTO_BOOT_VOICE_RECORD_SECONDS = 3;
 // ── Forward declarations ────────────────────────────────────
 static void checkConfigButton();
 static void checkAiChatButton();
-static void triggerImmediateRefresh(bool nextMode, bool keepWiFi);
+static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool partialVocabRating, const uint8_t *partialOldImage, bool skipNtp);
 static void handleLiveMode();
 static bool waitForContentReady();
 static void handleFailure(const char *reason);
@@ -787,6 +1039,12 @@ void setup() {
     ctx.lastClockTick = millis();
 
     bool aiChatRequested = renderedModeId.equalsIgnoreCase(AI_CHAT_MODE_ID);
+    if (renderedModeId.length() > 0) {
+        ctx.currentRenderedModeId = renderedModeId;
+        if (!ctx.currentRenderedModeId.equalsIgnoreCase(VOCAB_REVIEW_MODE_ID)) {
+            ctx.vocabReviewBackSide = false;
+        }
+    }
     if (aiChatRequested) {
         g_userAborted = false;
         bool exited = runAiChatConversation();
@@ -873,7 +1131,105 @@ void loop() {
                 postRuntimeMode("active");
             }
         }
+#if VOCAB_REVIEW_BUILD
+    } else if (ctx.wantEnterVocabReview || ctx.wantVocabFlip || ctx.wantVocabNextRating || ctx.wantVocabSubmitRating || ctx.wantVocabExit) {
+        bool doEnter = ctx.wantEnterVocabReview;
+        bool doFlip = ctx.wantVocabFlip;
+        bool doNextRating = ctx.wantVocabNextRating;
+        bool doSubmit = ctx.wantVocabSubmitRating;
+        bool doExit = ctx.wantVocabExit;
+        ctx.wantEnterVocabReview = false;
+        ctx.wantVocabFlip = false;
+        ctx.wantVocabNextRating = false;
+        ctx.wantVocabSubmitRating = false;
+        ctx.wantVocabExit = false;
+        ledFeedback("ack");
+
+        if (doExit) {
+            Serial.println("[VOCAB] Exit vocab review, showing next mode");
+            ctx.vocabReviewBackSide = false;
+            ctx.currentRenderedModeId = "";
+            lastContentChecksum = 0;
+            bool previousSuppressAbortCheck = g_suppressAbortCheck;
+            g_suppressAbortCheck = true;
+            triggerImmediateRefresh(true, true);
+            g_suppressAbortCheck = previousSuppressAbortCheck;
+            ctx.btnPressStart = 0;
+            ctx.aiBtnPressStart = 0;
+            ctx.ignoreConfigButtonUntilRelease = (digitalRead(PIN_CFG_BTN) == LOW);
+#if PIN_AI_CHAT_SW >= 0
+            ctx.ignoreAiButtonUntilRelease = (digitalRead(PIN_AI_CHAT_SW) == LOW);
+#endif
+            ctx.setupDoneAt = millis();
+        } else if (doFlip) {
+            vocabRatingCursor = 0;
+            if (displayCachedVocabRating(vocabRatingCursor)) {
+                ctx.vocabReviewBackSide = true;
+                Serial.println("[VOCAB] Flip from cached review-pack");
+            } else {
+                Serial.println("[VOCAB] Cached flip unavailable, falling back to render");
+                if (WiFi.status() == WL_CONNECTED || connectWiFi()) {
+                    if (postVocabEvent("flip")) {
+                        ctx.vocabReviewBackSide = true;
+                        lastContentChecksum = 0;
+                        triggerImmediateRefresh(false, true, epdSupportsPartialRefresh(), nullptr, true);
+                    } else {
+                        ledFeedback("fail");
+                    }
+                } else {
+                    ledFeedback("fail");
+                }
+            }
+            ctx.setupDoneAt = millis();
+        } else if (doNextRating) {
+            vocabRatingCursor = (vocabRatingCursor + 1) % 3;
+            if (displayCachedVocabRating(vocabRatingCursor)) {
+                ctx.vocabReviewBackSide = true;
+                Serial.printf("[VOCAB] Local rating cursor -> %d\n", vocabRatingCursor);
+            } else {
+                Serial.println("[VOCAB] Cached rating unavailable, falling back to render");
+                if (WiFi.status() == WL_CONNECTED || connectWiFi()) {
+                    if (postVocabEvent("next_rating")) {
+                        lastContentChecksum = 0;
+                        triggerImmediateRefresh(false, true, epdSupportsPartialRefresh(), nullptr, true);
+                    } else {
+                        ledFeedback("fail");
+                    }
+                } else {
+                    ledFeedback("fail");
+                }
+            }
+            ctx.setupDoneAt = millis();
+        } else {
+            const char *action = doEnter ? "enter" : "submit_rating";
+            const char *ratings[] = {"forgot", "fuzzy", "remember"};
+            const char *rating = doSubmit ? ratings[vocabRatingCursor % 3] : nullptr;
+            if (WiFi.status() != WL_CONNECTED && !connectWiFi()) {
+                Serial.println("[VOCAB] WiFi reconnect failed, skip");
+            } else if (postVocabEvent(action, rating)) {
+                bool previousSuppressAbortCheck = g_suppressAbortCheck;
+                g_suppressAbortCheck = true;
+                if (!fetchAndDisplayVocabPack()) {
+                    Serial.println("[VOCAB] review-pack unavailable, falling back to render");
+                    lastContentChecksum = 0;
+                    triggerImmediateRefresh(false, true);
+                }
+                g_suppressAbortCheck = previousSuppressAbortCheck;
+#if defined(BOARD_HAS_AUDIO)
+                playCurrentVocabWordAudio();
+#endif
+                ctx.btnPressStart = 0;
+                ctx.ignoreConfigButtonUntilRelease = (digitalRead(PIN_CFG_BTN) == LOW);
+                Serial.println("[VOCAB] Keeping WiFi connected for review actions");
+                ctx.setupDoneAt = millis();
+            } else {
+                ledFeedback("fail");
+            }
+        }
     } else if (ctx.wantSingleVoiceTurn) {
+#else
+    } else if (ctx.wantSingleVoiceTurn) {
+#endif
         ctx.wantSingleVoiceTurn = false;
         ctx.switchToModeId = "";
         Serial.println("[VOICE] Short press -> single voice turn");
@@ -1629,12 +1985,24 @@ static bool runAiChatConversation() {
 
 // ── Immediate refresh ───────────────────────────────────────
 
-static void triggerImmediateRefresh(bool nextMode, bool keepWiFi) {
+static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool partialVocabRating, const uint8_t *partialOldImage, bool skipNtp) {
     Serial.println("[REFRESH] Triggering immediate refresh...");
     ledFeedback("ack");
+    uint8_t *previousImage = nullptr;
     if (nextMode) {
+        previousImage = (uint8_t *)malloc(IMG_BUF_LEN);
+        if (previousImage) {
+            memcpy(previousImage, imgBuf, IMG_BUF_LEN);
+        }
         showModePreview("NEXT");
     }
+    auto restorePreviousImage = [&]() {
+        if (nextMode && previousImage) {
+            memcpy(imgBuf, previousImage, IMG_BUF_LEN);
+            Serial.println("[REFRESH] Restoring previous image after failed next-mode refresh");
+            smartDisplay(imgBuf);
+        }
+    };
     bool connected = (WiFi.status() == WL_CONNECTED);
     if (!connected) {
         ledFeedback("connecting");
@@ -1644,6 +2012,12 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi) {
         ledFeedback("downloading");
         String renderedModeId;
         bool fetched = fetchBMP(nextMode, nullptr, &renderedModeId);
+        if (fetched && renderedModeId.length() > 0) {
+            ctx.currentRenderedModeId = renderedModeId;
+            if (!ctx.currentRenderedModeId.equalsIgnoreCase(VOCAB_REVIEW_MODE_ID)) {
+                ctx.vocabReviewBackSide = false;
+            }
+        }
         bool aiChatRequested = renderedModeId.equalsIgnoreCase(AI_CHAT_MODE_ID);
         String pendingMode;
         if (!aiChatRequested) {
@@ -1667,13 +2041,20 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi) {
 #else
             newChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
 #endif
-            syncNTP();
+            if (!skipNtp) {
+                syncNTP();
+            }
             if (newChecksum == lastContentChecksum && !nextMode) {
                 Serial.println("Content unchanged, skipping display refresh");
                 ledFeedback("success");
             } else {
-                Serial.println("Displaying new content...");
-                smartDisplay(imgBuf);
+                if (partialVocabRating && ctx.currentRenderedModeId.equalsIgnoreCase(VOCAB_REVIEW_MODE_ID)) {
+                    Serial.println("[VOCAB] Displaying reveal/control region with partial refresh...");
+                    updateVocabRatingRegion(partialOldImage);
+                } else {
+                    Serial.println("Displaying new content...");
+                    smartDisplay(imgBuf);
+                }
                 lastContentChecksum = newChecksum;
                 ledFeedback("success");
                 Serial.println("Display done");
@@ -1685,6 +2066,7 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi) {
                 bool exited = runAiChatConversation();
                 if (g_userAborted) {
                     Serial.println("User aborted AI chat -> portal");
+                    if (previousImage) free(previousImage);
                     enterPortalMode();
                     return;
                 }
@@ -1705,12 +2087,25 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi) {
             lastRenderedPeriod = currentPeriodIndex();
             ctx.lastClockTick = millis();
         } else {
-            Serial.println("Fetch failed, retrying after reconnect...");
-            WiFi.disconnect(true);
-            delay(300);
-            if (connectWiFi()) {
+            bool retryReady = false;
+            if (keepWiFiEffective && WiFi.status() == WL_CONNECTED) {
+                Serial.println("Fetch failed, retrying on existing WiFi...");
+                retryReady = true;
+            } else {
+                Serial.println("Fetch failed, retrying after reconnect...");
+                WiFi.disconnect(true);
+                delay(300);
+                retryReady = connectWiFi();
+            }
+            if (retryReady) {
                 fetched = fetchBMP(nextMode, nullptr, &renderedModeId);
                 if (fetched) {
+                    if (renderedModeId.length() > 0) {
+                        ctx.currentRenderedModeId = renderedModeId;
+                        if (!ctx.currentRenderedModeId.equalsIgnoreCase(VOCAB_REVIEW_MODE_ID)) {
+                            ctx.vocabReviewBackSide = false;
+                        }
+                    }
                     cacheSave(imgBuf, IMG_BUF_LEN);
                     uint32_t retryChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
                     syncNTP();
@@ -1723,10 +2118,12 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi) {
                 } else {
                     ledFeedback("fail");
                     Serial.println("Retry also failed, keeping old content");
+                    restorePreviousImage();
                 }
             } else {
                 ledFeedback("fail");
                 Serial.println("WiFi reconnect failed, keeping old content");
+                restorePreviousImage();
             }
         }
         if (!keepWiFiEffective) {
@@ -1736,7 +2133,9 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi) {
     } else {
         ledFeedback("fail");
         Serial.println("WiFi reconnect failed");
+        restorePreviousImage();
     }
+    if (previousImage) free(previousImage);
 }
 
 static bool waitForContentReady() {
@@ -1822,22 +2221,76 @@ static void checkAiChatButton() {
     return;
 #else
     bool isPressed = (digitalRead(PIN_AI_CHAT_SW) == LOW);
+    if (ctx.ignoreAiButtonUntilRelease) {
+        if (!isPressed) {
+            ctx.ignoreAiButtonUntilRelease = false;
+        }
+        ctx.aiBtnPressStart = 0;
+        return;
+    }
+
     if (isPressed) {
         if (ctx.aiBtnPressStart == 0) {
             ctx.aiBtnPressStart = millis();
-        } else if (!ctx.wantEnterAiChatMode &&
-                   (millis() - ctx.aiBtnPressStart >= (unsigned long)AI_CHAT_BTN_HOLD_MS)) {
-            Serial.printf("[AI CHAT] Switch held for %dms, queue enter ai chat\n", AI_CHAT_BTN_HOLD_MS);
-            ctx.wantEnterAiChatMode = true;
-            ctx.aiBtnPressStart = 0;
+        } else if (!ctx.wantEnterAiChatMode) {
+            unsigned long holdTime = millis() - ctx.aiBtnPressStart;
+#if VOCAB_REVIEW_BUILD
+            bool inVocabMode = ctx.currentRenderedModeId.equalsIgnoreCase(VOCAB_REVIEW_MODE_ID);
+            unsigned long holdThreshold = inVocabMode
+                ? (unsigned long)VOCAB_EXIT_HOLD_MS
+                : (unsigned long)VOCAB_ENTER_HOLD_MS;
+#else
+            unsigned long holdThreshold = (unsigned long)AI_CHAT_BTN_HOLD_MS;
+#endif
+            if (holdTime >= holdThreshold) {
+#if VOCAB_REVIEW_BUILD
+                if (inVocabMode) {
+                    Serial.printf("[VOCAB] Switch held for %dms, exit vocab review\n", VOCAB_EXIT_HOLD_MS);
+                    ctx.wantVocabExit = true;
+                } else {
+                    Serial.printf("[VOCAB] Switch held for %dms, enter vocab review\n", VOCAB_ENTER_HOLD_MS);
+                    ctx.wantEnterVocabReview = true;
+                }
+                ctx.aiBtnPressStart = 0;
+                ctx.ignoreAiButtonUntilRelease = true;
+#else
+                Serial.printf("[AI CHAT] Switch held for %dms, queue enter ai chat\n", AI_CHAT_BTN_HOLD_MS);
+                ctx.wantEnterAiChatMode = true;
+                ctx.aiBtnPressStart = 0;
+                ctx.ignoreAiButtonUntilRelease = true;
+#endif
+            }
         }
     } else {
         if (ctx.aiBtnPressStart > 0 && !ctx.wantEnterAiChatMode) {
             unsigned long duration = millis() - ctx.aiBtnPressStart;
             if (duration >= (unsigned long)SHORT_PRESS_MIN_MS &&
+#if VOCAB_REVIEW_BUILD
+                duration < (unsigned long)(
+                    ctx.currentRenderedModeId.equalsIgnoreCase(VOCAB_REVIEW_MODE_ID)
+                        ? VOCAB_EXIT_HOLD_MS
+                        : VOCAB_ENTER_HOLD_MS
+                )) {
+#else
                 duration < (unsigned long)AI_CHAT_BTN_HOLD_MS) {
+#endif
+#if VOCAB_REVIEW_BUILD
+                if (ctx.currentRenderedModeId.equalsIgnoreCase(VOCAB_REVIEW_MODE_ID)) {
+                    if (ctx.vocabReviewBackSide && duration >= (unsigned long)VOCAB_BTN_HOLD_MS) {
+                        Serial.printf("[VOCAB] Switch released after %lums, submit rating\n", duration);
+                        ctx.wantVocabSubmitRating = true;
+                    } else if (ctx.vocabReviewBackSide) {
+                        Serial.printf("[VOCAB] Short press %lums, next rating\n", duration);
+                        ctx.wantVocabNextRating = true;
+                    } else {
+                        Serial.printf("[VOCAB] Short press %lums, flip card\n", duration);
+                        ctx.wantVocabFlip = true;
+                    }
+                }
+#else
                 Serial.printf("[VOICE] Short press %lums, queue single voice turn\n", duration);
                 ctx.wantSingleVoiceTurn = true;
+#endif
             }
         }
         ctx.aiBtnPressStart = 0;
